@@ -43,6 +43,11 @@ to_4tuple = _ntuple(4)
 to_ntuple = _ntuple
 
 
+def seq_len(img_size: tuple[int, int], patch_size: int) -> int:
+    h, w = img_size
+    return (h // patch_size) * (w // patch_size)
+
+
 class ClsToken(nn.Module):
     def __init__(
         self,
@@ -164,14 +169,74 @@ class ViTPatchGenerator(nn.Module):
             nn.LayerNorm(embed_dim) if normalize_patches else nn.Identity()
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        patches = self.embed_patches(x)
-        patches, pos_enc = self.apply_pos_enc(patches, input_size=x.shape[2:])
-        patches = self.cls_token(patches)
+    def forward(
+        self, x: torch.Tensor, imgs_sizes: list[tuple[int, int]] | None = None
+    ) -> torch.Tensor:
+        if imgs_sizes is not None:
+            patches = self.embedder(x)
+            patches, pos_enc = self.apply_pos_enc_dynamic(
+                patches, imgs_sizes=imgs_sizes
+            )
+            patches = self.cls_token_dynamic(patches, imgs_sizes=imgs_sizes)
+        else:
+            patches = self.embed_patches(x)
+            patches, pos_enc = self.apply_pos_enc(patches, input_size=x.shape[2:])
+            patches = self.cls_token(patches)
         patches = self.patch_normalizer(patches)
         if self.return_pos_enc:
             return patches, pos_enc
         return patches
+
+    def apply_pos_enc_dynamic(
+        self, patches: torch.Tensor, imgs_sizes: list[tuple[int, int]]
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        if not self.abs_pos:
+            return patches, None
+
+        current_length = 0
+        pos_enc_list = []
+
+        for size in imgs_sizes:
+            seq_length = seq_len(size, self.patch_size)
+
+            img_patches = patches[:, current_length : current_length + seq_length, :]
+            pos_enc = self.get_pos_enc(patches.shape[0], input_size=size)
+            img_patches_with_pos = img_patches + pos_enc
+
+            patches = torch.cat(
+                [
+                    patches[:, :current_length, :],
+                    img_patches_with_pos,
+                    patches[:, current_length + seq_length :, :],
+                ],
+                dim=1,
+            )
+            pos_enc_list.append(pos_enc)
+            current_length += seq_length
+
+        full_pos_enc = torch.cat(pos_enc_list, dim=1) if pos_enc_list else None
+        return patches, full_pos_enc
+
+    def cls_token_dynamic(
+        self, patches: torch.Tensor, imgs_sizes: list[tuple[int, int]]
+    ) -> torch.Tensor:
+        if not self.cls_token.enabled:
+            return patches
+
+        out = []
+        current_length = 0
+
+        for size in imgs_sizes:
+            seq_length = seq_len(size, self.patch_size)
+
+            class_token = self.cls_token.token.unsqueeze(0).expand(
+                patches.shape[0], -1, -1
+            )
+            out.append(class_token)
+            out.append(patches[:, current_length : current_length + seq_length, :])
+            current_length += seq_length
+
+        return torch.cat(out, dim=1)
 
     @property
     def apply_cls_token(self):
@@ -457,10 +522,15 @@ class RadioInternVisionModel(nn.Module):
     def get_input_embeddings(self):
         return self.embeddings
 
-    def forward(self, x: torch.Tensor) -> torch.FloatTensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        imgs_sizes: list[tuple[int, int]] | None = None,
+        attn_mask: torch.Tensor | None = None,
+    ) -> torch.FloatTensor:
         assert self.patch_generator is not None
-        hidden_states = self.patch_generator(x)
-        encoder_outputs = self.encoder(inputs_embeds=hidden_states)
+        hidden_states = self.patch_generator(x, imgs_sizes=imgs_sizes)
+        encoder_outputs = self.encoder(inputs_embeds=hidden_states, attn_mask=attn_mask)
         return encoder_outputs
 
 
@@ -489,13 +559,55 @@ class RadioModel(nn.Module):
             prefix=prefix,
         )
 
+    def create_inter_image_attention_mask(
+        self, imgs_sizes: list[tuple[int, int]], device: torch.device
+    ) -> torch.Tensor:
+        patch_size = self.model.patch_generator.patch_size
+        num_skip = self.model.patch_generator.num_skip
+
+        patch_counts = [seq_len(size, patch_size) + num_skip for size in imgs_sizes]
+        total_patches = sum(patch_counts)
+        mask = torch.zeros(
+            total_patches, total_patches, dtype=torch.bool, device=device
+        )
+
+        start_idx = 0
+        for patch_count in patch_counts:
+            end_idx = start_idx + patch_count
+            # Allow attention within this image's patches
+            mask[start_idx:end_idx, start_idx:end_idx] = True
+            start_idx = end_idx
+
+        return mask
+
     def forward(
         self,
         pixel_values: torch.Tensor | None = None,
         pixel_embeds: torch.Tensor | None = None,
+        *,
+        imgs_sizes: list[tuple[int, int]] | None = None,
     ) -> torch.FloatTensor:
-        y = self.model(pixel_values)
-        return self._extract_final(y)
+        num_skip = self.model.patch_generator.num_skip
+        patch_size = self.model.patch_generator.patch_size
+        if imgs_sizes is not None:
+            # Dynamic resolution: multiple images are passed in as a ragged tensor
+            attn_mask = None
+            if len(imgs_sizes) > 1:
+                attn_mask = self.create_inter_image_attention_mask(
+                    imgs_sizes, device=pixel_values.device
+                )
+            y = self.model(pixel_values, imgs_sizes=imgs_sizes, attn_mask=attn_mask)
+
+            out: list[torch.Tensor] = []
+            offset = 0
+            for num_tokens in [self.seq_len(size, patch_size) for size in imgs_sizes]:
+                offset += num_skip
+                out.append(y[:, offset : offset + num_tokens])
+                offset += num_tokens
+            return torch.cat(out, dim=1)
+        else:
+            y = self.model(pixel_values)
+            return y[:, num_skip:]
 
     def load_weights(self, weights) -> set[str]:
         loaded_params: set[str] = set()
@@ -545,11 +657,3 @@ class RadioModel(nn.Module):
                 loaded_params.add(vllm_key)
 
         return loaded_params
-
-    def _extract_final(self, y: torch.Tensor):
-        # Remove CLS + REGISTERS tokens
-        patch_gen = getattr(self.model, "patch_generator", None)
-        if patch_gen is not None:
-            all_feat = y[:, patch_gen.num_skip :]
-
-        return all_feat
