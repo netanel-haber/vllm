@@ -9,6 +9,7 @@
 
 import copy
 import math
+import time
 import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping, Sequence
@@ -830,6 +831,8 @@ class BaseNanoNemotronVLProcessor(ABC):
         images: list[Image.Image],
         max_num_tiles: int | None,
     ) -> tuple[list[str], dict[str, Any]]:
+        start_time = time.time()
+        
         if len(images) == 0:
             image_inputs = {}
             return text, image_inputs
@@ -988,6 +991,10 @@ class BaseNanoNemotronVLProcessor(ABC):
                   f"</img> count={img_end_count}")
 
         text = ["".join(parts)]
+        
+        elapsed_time = time.time() - start_time
+        print(f"[TIMER] _preprocess_image took {elapsed_time:.4f} seconds")
+        
         return text, image_inputs
 
     def _make_batch_input(self, input_item: Any | list[Any] | None = None):
