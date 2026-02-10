@@ -135,6 +135,12 @@ AUDIO_CONTEXT = "<so_embedding>"
 # MAX_FRAMES = 16
 DEFAULT_NUM_TILES = 12
 
+import os
+import numpy as np
+import cv2
+FAST_PREPROCESS = os.environ.get("FAST_PREPROCESS", "0") == "1"
+
+
 
 class NanoNemotronVLImagePixelInputs(TensorSchema):
     """
@@ -419,12 +425,13 @@ class DynamicResolutionImageTiler:
         self._factor_max = factor_max
         self.norm_mean = torch.tensor(norm_mean).reshape(3, 1, 1)
         self.norm_std = torch.tensor(norm_std).reshape(3, 1, 1)
-        self._transform = T.Compose(
-            [
-                T.Lambda(lambda img: img.convert("RGB") if img.mode != "RGB" else img),
-                T.ToTensor(),
-            ]
-        )
+        transforms = [
+            T.Lambda(lambda img: img.convert("RGB") if img.mode != "RGB" else img),
+            T.ToTensor(),
+        ]
+        if FAST_PREPROCESS:
+            transforms = transforms[1:]  # we will hold a numpy array instead of PIL
+        self._transform = T.Compose(transforms)
         assert downsample_ratio < 1
         reduction_factor = 1 / downsample_ratio
         assert reduction_factor == 2.0
@@ -514,12 +521,25 @@ class DynamicResolutionImageTiler:
         patch_size: tuple[int, int]
 
     def apply_params(self, params: DynamicResolutionParams) -> list[torch.Tensor]:
-        resized_img = params.media.resize(
-            (
-                params.patch_size[0] * self._patch_size,
-                params.patch_size[1] * self._patch_size,
-            )
+        target_size = (
+            params.patch_size[0] * self._patch_size,
+            params.patch_size[1] * self._patch_size
         )
+        if FAST_PREPROCESS:
+            rgb_array = np.asarray(
+                params.media.convert("RGB") if params.media.mode != "RGB"
+                else params.media, dtype=np.uint8
+            )
+            resized_img = cv2.resize(
+                rgb_array,
+                dsize=target_size,
+                interpolation=cv2.INTER_LINEAR,
+            )
+        else:
+            resized_img = params.media.resize(
+                target_size
+            )
+        
         processed_images = [resized_img]
 
         return [self._transform(img) for img in processed_images]
@@ -994,6 +1014,22 @@ class BaseNanoNemotronVLProcessor(ABC):
         
         elapsed_time = time.time() - start_time
         print(f"[TIMER] _preprocess_image took {elapsed_time:.4f} seconds")
+        
+        # Print debugging information about the preprocessed tensors
+        print(f"[DEBUG] Image preprocessing complete for {len(images)} image(s)")
+        if tiler := self.dynamic_tiler:
+            print(f"[DEBUG] Using dynamic resolution tiler")
+            print(f"[DEBUG] pixel_values_flat: list of {len(image_inputs['pixel_values_flat'])} tensors")
+            for idx, pv in enumerate(image_inputs['pixel_values_flat']):
+                print(f"[DEBUG]   Image {idx}: shape={pv.shape}, dtype={pv.dtype}")
+                print(f"[DEBUG]   Image {idx}: first 5 values={pv.flatten()[:5].tolist()}")
+            print(f"[DEBUG] imgs_sizes: {image_inputs['imgs_sizes']}")
+            print(f"[DEBUG] num_tokens_per_image: {image_inputs['num_tokens_per_image']}")
+        else:
+            print(f"[DEBUG] Using standard (non-dynamic) resolution")
+            print(f"[DEBUG] pixel_values_flat: shape={image_inputs['pixel_values_flat'].shape}, dtype={image_inputs['pixel_values_flat'].dtype}")
+            print(f"[DEBUG] pixel_values_flat: first 5 values={image_inputs['pixel_values_flat'].flatten()[:5].tolist()}")
+            print(f"[DEBUG] image_num_patches: {image_inputs['image_num_patches'].tolist()}")
         
         return text, image_inputs
 
