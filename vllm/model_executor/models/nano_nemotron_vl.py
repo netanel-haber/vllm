@@ -1397,14 +1397,8 @@ class NanoNemotronVLMultiModalProcessor(
     def _extract_audio_from_videos(
         self,
         mm_data: MultiModalDataDict,
-        max_audio_duration: float | None = None,
     ) -> tuple[MultiModalDataDict, list[AudioItem]]:
         """Extract audio tracks from video bytes in *mm_data*.
-
-        Args:
-            mm_data: The multimodal data dict containing video items.
-            max_audio_duration: If set, only extract the first N seconds
-                of audio from each video.
 
         Returns:
             The (possibly augmented) *mm_data* and the list of
@@ -1440,7 +1434,6 @@ class NanoNemotronVLMultiModalProcessor(
                 extract_audio_from_video_bytes(
                     video_bytes,
                     sr=target_sr,
-                    max_duration=max_audio_duration,
                 )
             )
             metadata.pop("original_video_bytes", None)
@@ -1461,18 +1454,11 @@ class NanoNemotronVLMultiModalProcessor(
         use_audio_in_video = bool(
             hf_processor_mm_kwargs.get("use_audio_in_video", False)
         )
-        max_audio_duration = hf_processor_mm_kwargs.get(
-            "max_audio_duration", None
-        )
-        if max_audio_duration is not None:
-            max_audio_duration = float(max_audio_duration)
 
-        # Strip our custom kwargs so they don't reach the HF processor
-        _custom_keys = {"use_audio_in_video", "max_audio_duration"}
         hf_processor_mm_kwargs = {
             k: v
             for k, v in hf_processor_mm_kwargs.items()
-            if k not in _custom_keys
+            if k != "use_audio_in_video"
         }
 
         if not (
@@ -1488,9 +1474,7 @@ class NanoNemotronVLMultiModalProcessor(
                 mm_uuids=mm_uuids,
             )
 
-        mm_data, audio_items = self._extract_audio_from_videos(
-            mm_data, max_audio_duration=max_audio_duration
-        )
+        mm_data, audio_items = self._extract_audio_from_videos(mm_data)
 
         if not isinstance(prompt, str):
             tokenizer = self.info.get_tokenizer()
@@ -1506,9 +1490,9 @@ class NanoNemotronVLMultiModalProcessor(
 
         mm_items = self._to_mm_items(mm_data)
 
-        # Use the non-cached path so that the HF processor receives
-        # both the prompt text (with <so_embedding>) and the audio data
-        # together, letting it handle the audio replacement natively.
+        # Bypass the cached path: the HF processor must receive the
+        # prompt (with injected <so_embedding>) and the audio data
+        # together so it can perform audio-token replacement natively.
         (
             prompt_ids,
             mm_info,
@@ -1534,18 +1518,13 @@ class NanoNemotronVLMultiModalProcessor(
             for modality, placeholders in mm_placeholders.items()
         }
 
-        t14 = time.time()
-        result = MultiModalInputs(
+        return MultiModalInputs(
             type="multimodal",
             prompt_token_ids=prompt_ids,
             mm_kwargs=mm_info.kwargs,
             mm_hashes=mm_info.hashes,
             mm_placeholders=mm_placeholder_ranges,
         )
-        t15 = time.time()
-        print(f"[apply] MultiModalInputs pack took {t15 - t14:.3f} seconds")
-
-        return result
 
     def _get_mm_fields_config(
         self,
