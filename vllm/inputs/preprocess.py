@@ -266,7 +266,7 @@ class InputPreprocessor:
             tokenization_kwargs=tokenization_kwargs,
             mm_uuids=mm_uuids,
         )
-        mm_hashes = mm_input["mm_hashes"] 
+        mm_hashes = mm_input["mm_hashes"]
 
         # Validate that all mm items have a string as their hash
         contains_only_strings = all(

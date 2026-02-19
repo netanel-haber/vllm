@@ -307,7 +307,7 @@ class MediaConnector:
         image_io = ImageMediaIO(
             image_mode=image_mode, **self.media_io_kwargs.get("image", {})
         )
-        
+
         video_kwargs = dict(self.media_io_kwargs.get("video", {}))
         video_kwargs["keep_video_bytes"] = keep_video_bytes
 
