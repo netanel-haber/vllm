@@ -312,13 +312,10 @@ class MediaConnector:
             image_mode=image_mode, **self.media_io_kwargs.get("image", {})
         )
         
-        video_kwargs = self.media_io_kwargs.get("video", {})
+        video_kwargs = dict(self.media_io_kwargs.get("video", {}))
         video_kwargs["keep_video_bytes"] = keep_video_bytes
 
-        video_io = VideoMediaIO(
-            image_io, 
-            **video_kwargs
-        )
+        video_io = VideoMediaIO(image_io, **video_kwargs)
 
         return self.load_from_url(
             video_url,
@@ -341,14 +338,11 @@ class MediaConnector:
         image_io = ImageMediaIO(
             image_mode=image_mode, **self.media_io_kwargs.get("image", {})
         )
-                
-        video_kwargs = self.media_io_kwargs.get("video", {})
+
+        video_kwargs = dict(self.media_io_kwargs.get("video", {}))
         video_kwargs["keep_video_bytes"] = keep_video_bytes
 
-        video_io = VideoMediaIO(
-            image_io, 
-            **video_kwargs,
-        )
+        video_io = VideoMediaIO(image_io, **video_kwargs)
 
         return await self.load_from_url_async(
             video_url,
