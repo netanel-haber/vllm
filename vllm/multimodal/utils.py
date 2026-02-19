@@ -4,7 +4,6 @@
 import asyncio
 import atexit
 import mimetypes
-from functools import partial
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
 from itertools import groupby
@@ -155,7 +154,6 @@ class MediaConnector:
         media_io: MediaIO[_M],
         *,
         fetch_timeout: int | None = None,
-        **load_kwargs: Any,
     ) -> _M:  # type: ignore[type-var]
         url_spec = urlparse(url)
 
@@ -169,7 +167,7 @@ class MediaConnector:
                 allow_redirects=envs.VLLM_MEDIA_URL_ALLOW_REDIRECTS,
             )
 
-            return media_io.load_bytes(data, **load_kwargs)
+            return media_io.load_bytes(data)
 
         if url_spec.scheme == "data":
             return self._load_data_url(url_spec, media_io)
@@ -186,7 +184,6 @@ class MediaConnector:
         media_io: MediaIO[_M],
         *,
         fetch_timeout: int | None = None,
-        **load_kwargs: Any,
     ) -> _M:
         url_spec = urlparse(url)
         loop = asyncio.get_running_loop()
@@ -200,8 +197,7 @@ class MediaConnector:
                 timeout=fetch_timeout,
                 allow_redirects=envs.VLLM_MEDIA_URL_ALLOW_REDIRECTS,
             )
-            load_fn = partial(media_io.load_bytes, data, **load_kwargs)
-            future = loop.run_in_executor(global_thread_pool, load_fn)
+            future = loop.run_in_executor(global_thread_pool, media_io.load_bytes, data)
             return await future
 
         if url_spec.scheme == "data":
