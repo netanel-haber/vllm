@@ -4,6 +4,7 @@
 import asyncio
 import atexit
 import mimetypes
+from functools import partial
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
 from itertools import groupby
@@ -154,6 +155,7 @@ class MediaConnector:
         media_io: MediaIO[_M],
         *,
         fetch_timeout: int | None = None,
+        **load_kwargs: Any,
     ) -> _M:  # type: ignore[type-var]
         url_spec = urlparse(url)
 
@@ -167,7 +169,7 @@ class MediaConnector:
                 allow_redirects=envs.VLLM_MEDIA_URL_ALLOW_REDIRECTS,
             )
 
-            return media_io.load_bytes(data)
+            return media_io.load_bytes(data, **load_kwargs)
 
         if url_spec.scheme == "data":
             return self._load_data_url(url_spec, media_io)
@@ -184,6 +186,7 @@ class MediaConnector:
         media_io: MediaIO[_M],
         *,
         fetch_timeout: int | None = None,
+        **load_kwargs: Any,
     ) -> _M:
         url_spec = urlparse(url)
         loop = asyncio.get_running_loop()
@@ -197,7 +200,8 @@ class MediaConnector:
                 timeout=fetch_timeout,
                 allow_redirects=envs.VLLM_MEDIA_URL_ALLOW_REDIRECTS,
             )
-            future = loop.run_in_executor(global_thread_pool, media_io.load_bytes, data)
+            load_fn = partial(media_io.load_bytes, data, **load_kwargs)
+            future = loop.run_in_executor(global_thread_pool, load_fn)
             return await future
 
         if url_spec.scheme == "data":
@@ -299,6 +303,7 @@ class MediaConnector:
         video_url: str,
         *,
         image_mode: str = "RGB",
+        keep_video_bytes: bool = False,
     ) -> tuple[npt.NDArray, dict[str, Any]]:
         """
         Load video from an HTTP or base64 data URL.
@@ -312,6 +317,7 @@ class MediaConnector:
             video_url,
             video_io,
             fetch_timeout=envs.VLLM_VIDEO_FETCH_TIMEOUT,
+            keep_video_bytes=keep_video_bytes,
         )
 
     async def fetch_video_async(
@@ -319,6 +325,7 @@ class MediaConnector:
         video_url: str,
         *,
         image_mode: str = "RGB",
+        keep_video_bytes: bool = False,
     ) -> tuple[npt.NDArray, dict[str, Any]]:
         """
         Asynchronously load video from an HTTP or base64 data URL.
@@ -334,6 +341,7 @@ class MediaConnector:
             video_url,
             video_io,
             fetch_timeout=envs.VLLM_VIDEO_FETCH_TIMEOUT,
+            keep_video_bytes=keep_video_bytes,
         )
 
     def fetch_image_embedding(
