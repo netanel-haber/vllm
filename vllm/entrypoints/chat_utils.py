@@ -1287,7 +1287,7 @@ def _get_interleaved_text_prompt(
         if elem in placeholder_storage:
             texts[idx] = placeholder_storage[elem].pop(0)
 
-    return "\n".join(texts)
+    return "".join(texts)
 
 
 # TODO: Let user specify how to insert multimodal tokens into prompt
@@ -1720,6 +1720,7 @@ def parse_chat_messages_futures(
     model_config: ModelConfig,
     content_format: _ChatTemplateContentFormat,
     mm_processor_kwargs: dict[str, Any] | None = None,
+    interleave_mm_strings: bool | None = None,
 ) -> tuple[
     list[ConversationMessage],
     Awaitable[MultiModalDataDict | None],
@@ -1730,15 +1731,16 @@ def parse_chat_messages_futures(
         model_config, mm_processor_kwargs=mm_processor_kwargs
     )
 
+    if interleave_mm_strings is None and (cfg := model_config.multimodal_config):
+        interleave_mm_strings = cfg.interleave_mm_strings
+
     for msg in messages:
         sub_messages = _parse_chat_message_content(
             msg,
             mm_tracker,
             content_format,
-            interleave_strings=(
-                content_format == "string"
-                and model_config.multimodal_config is not None
-                and model_config.multimodal_config.interleave_mm_strings
+            interleave_strings=bool(
+                content_format == "string" and interleave_mm_strings
             ),
         )
 
