@@ -828,13 +828,11 @@ class LLM:
         prompts: list[TokensPrompt] = []
 
         for msgs in list_of_messages:
-            # NOTE: _parse_chat_message_content_parts() currently doesn't
-            # handle mm_processor_kwargs, since there is no implementation in
-            # the chat message parsing for it.
             conversation, mm_data, mm_uuids = parse_chat_messages(
                 msgs,
                 model_config,
                 content_format=resolved_content_format,
+                mm_processor_kwargs=mm_processor_kwargs,
             )
 
             if isinstance(tokenizer, MistralTokenizer):
