@@ -235,8 +235,10 @@ class ViTPatchGenerator(nn.Module):
     ) -> torch.Tensor:
         T = self.temporal_patch_dim
 
-        if imgs_sizes is not None and num_frames_per_video is not None and T > 1:
-            # Dynamic-resolution video with temporal compression.
+        if T > 1:
+            # Video with temporal compression (one or more videos)
+            assert imgs_sizes is not None and num_frames_per_video is not None and len(imgs_sizes) > 1, \
+                f"Temporal compression (T={T}) requires imgs_sizes and num_frames_per_video"
             patches = self._embed_video_dynamic(
                 x, imgs_sizes, num_frames_per_video
             )
@@ -389,7 +391,11 @@ class ViTPatchGenerator(nn.Module):
             num_tubelets = N_padded // T
 
             # (num_tubelets, num_spatial, T * 3*P*P)
-            stacked = stacked.view(num_tubelets, num_spatial, T * stacked.shape[-1])
+            stacked = rearrange(
+                stacked,
+                '(tubelets frames) spatial feat -> tubelets spatial (frames feat)',
+                frames=T,
+            )
 
             if self.separate_video_embedder:
                 embedded = self.video_embedder(stacked)
