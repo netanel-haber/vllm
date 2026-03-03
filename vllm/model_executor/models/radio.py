@@ -235,10 +235,16 @@ class ViTPatchGenerator(nn.Module):
     ) -> torch.Tensor:
         T = self.temporal_patch_dim
 
-        if T > 1:
-            # Video with temporal compression (one or more videos)
-            assert imgs_sizes is not None and num_frames_per_video is not None and len(imgs_sizes) > 1, \
-                f"Temporal compression (T={T}) requires imgs_sizes and num_frames_per_video"
+        video_with_temporal_compression = (
+            T > 1
+            and imgs_sizes is not None
+            and num_frames_per_video is not None
+            and len(imgs_sizes) > 1
+        )
+        if video_with_temporal_compression:
+            # Video with temporal compression
+            # Must pass in `imgs_sizes` whether it's a single video or multiple videos
+            # Each video always uses a fixed HW (but can be different between videos)
             patches = self._embed_video_dynamic(
                 x, imgs_sizes, num_frames_per_video
             )
@@ -257,7 +263,11 @@ class ViTPatchGenerator(nn.Module):
             )
             patches = self.cls_token_dynamic(patches, imgs_sizes=imgs_sizes)
         else:
-            # Fixed-resolution path.
+            assert T <= 1, (
+                f"Fixed-resolution path not supported for temporal compression "
+                f"(T={T}). imgs_sizes must be provided."
+            )
+            # Fixed-resolution path (T=1 only).
             patches = self.embed_patches(x)
             patches, pos_enc = self.apply_pos_enc(patches, input_size=x.shape[2:])
             patches = self.cls_token(patches)
