@@ -73,8 +73,11 @@ from vllm.multimodal.inputs import (
     MultiModalDataDict,
     MultiModalFieldConfig,
     MultiModalKwargsItems,
+    MultiModalInputs,
+    MultiModalUUIDDict,
     VideoItem,
 )
+from vllm.multimodal.media.audio import extract_audio_from_video_bytes
 from vllm.multimodal.parse import (
     AudioProcessorItems,
     ImageEmbeddingItems,
@@ -82,6 +85,7 @@ from vllm.multimodal.parse import (
     ImageSize,
     MultiModalDataItems,
     MultiModalDataParser,
+    VideoProcessorItems,
 )
 from vllm.multimodal.processing import BaseDummyInputsBuilder
 from vllm.multimodal.processing.processor import (
@@ -1677,6 +1681,163 @@ class NanoNemotronVLMultiModalProcessor(
     NanoNemotronBaseVLMultiModalProcessor[NanoNemotronVLProcessingInfo]
 ):
     """MultiModalProcessor extended for video support"""
+
+    def _extract_audio_from_videos(
+        self,
+        mm_items: MultiModalDataItems,
+    ) -> tuple[MultiModalDataItems, list[AudioItem]]:
+        """Extract audio tracks from video bytes in *mm_items*.
+
+        Returns:
+            The augmented *mm_items* (with audio added) and the list of
+            extracted audio items.
+        """
+        videos = mm_items.get_items("video", VideoProcessorItems)
+        assert isinstance(videos.metadata, list)
+        metadata_list = videos.metadata
+
+        target_sr = None
+        if extractor := self.info.audio_extractor:
+            target_sr = extractor.sampling_rate
+
+        audio_items: list[AudioItem] = []
+        for metadata in metadata_list:
+            video_bytes = metadata.get("original_video_bytes")
+            if video_bytes is None or len(video_bytes) == 0:
+                raise ValueError(
+                    "Cannot extract audio from video: original_video_bytes is "
+                    "missing or empty. When using use_audio_in_video=True, "
+                    "video must be loaded with keep_video_bytes=True (e.g. via "
+                    "the chat API with a model that sets use_audio_in_video)."
+                )
+            audio_items.append(
+                extract_audio_from_video_bytes(
+                    video_bytes,
+                    sr=target_sr,
+                )
+            )
+
+        new_metadata_list = [
+            {k: v for k, v in meta.items() if k != "original_video_bytes"}
+            for meta in metadata_list
+        ]
+        new_videos = VideoProcessorItems(data=videos.data, metadata=new_metadata_list)
+
+        audio_parsed = self.data_parser.parse_mm_data({"audio": audio_items})
+
+        new_mm_items_dict = {**mm_items, **audio_parsed, "video": new_videos}
+        mm_items = MultiModalDataItems(new_mm_items_dict)
+
+        return mm_items, audio_items
+
+    # ── apply() v0.14 (active) ──────────────────────────────────────────
+    # Delete this block and uncomment the v0.16 block below after rebasing
+    # onto vllm main (once parakeet-avlm + PRs #35539 / #35657 merge).
+    def apply(
+        self,
+        prompt: str | list[int],
+        mm_data: MultiModalDataDict,
+        hf_processor_mm_kwargs: Mapping[str, object],
+        tokenization_kwargs: Mapping[str, object] | None = None,
+        *,
+        mm_uuids: MultiModalUUIDDict | None = None,
+    ) -> MultiModalInputs:
+        use_audio_in_video = bool(
+            hf_processor_mm_kwargs.get("use_audio_in_video", False)
+        )
+        hf_processor_mm_kwargs = {
+            k: v for k, v in hf_processor_mm_kwargs.items()
+            if k != "use_audio_in_video"
+        }
+        mm_items = self._to_mm_items(mm_data)
+        if not (
+            use_audio_in_video
+            and "video" in mm_items
+            and "audio" not in mm_items
+        ):
+            return super().apply(
+                prompt, mm_data, hf_processor_mm_kwargs,
+                tokenization_kwargs, mm_uuids=mm_uuids,
+            )
+        mm_items, audio_items = self._extract_audio_from_videos(mm_items)
+        if not isinstance(prompt, str):
+            tokenizer = self.info.get_tokenizer()
+            prompt = tokenizer.decode(prompt, skip_special_tokens=False)
+        for _ in audio_items:
+            prompt = prompt.replace("<video>", "<video>" + AUDIO_CONTEXT, 1)
+        if tokenization_kwargs is None:
+            tokenization_kwargs = {}
+        (prompt_ids, mm_info, is_update_applied) = \
+            self._cached_apply_hf_processor(
+                prompt, mm_items, hf_processor_mm_kwargs, tokenization_kwargs,
+            )
+        prompt_ids, mm_placeholders = self._maybe_apply_prompt_updates(
+            mm_items=mm_items, prompt_ids=prompt_ids,
+            mm_kwargs=mm_info.kwargs,
+            mm_prompt_updates=mm_info.prompt_updates,
+            is_update_applied=is_update_applied,
+        )
+        mm_placeholder_ranges = {
+            modality: [item.to_range() for item in placeholders]
+            for modality, placeholders in mm_placeholders.items()
+        }
+        return MultiModalInputs(
+            type="multimodal", prompt_token_ids=prompt_ids,
+            mm_kwargs=mm_info.kwargs, mm_hashes=mm_info.hashes,
+            mm_placeholders=mm_placeholder_ranges,
+        )
+    # ── apply() v0.16 (uncomment after rebase) ───────────────────────────
+    # def apply(
+    #     self,
+    #     processor_inputs: ProcessorInputs,
+    #     timing_ctx: TimingContext | None = None,
+    # ) -> MultiModalInputs:
+    #     if (hf_processor_mm_kwargs := processor_inputs.hf_processor_mm_kwargs) is None:
+    #         hf_processor_mm_kwargs = {}
+    #     use_audio_in_video = bool(
+    #         hf_processor_mm_kwargs.get("use_audio_in_video", False)
+    #     )
+    #     hf_processor_mm_kwargs = {
+    #         k: v for k, v in hf_processor_mm_kwargs.items()
+    #         if k != "use_audio_in_video"
+    #     }
+    #     processor_inputs.hf_processor_mm_kwargs = hf_processor_mm_kwargs
+    #     if not (
+    #         use_audio_in_video
+    #         and "video" in processor_inputs.mm_data_items
+    #         and "audio" not in processor_inputs.mm_data_items
+    #     ):
+    #         return super().apply(processor_inputs, timing_ctx)
+    #     mm_items, audio_items = self._extract_audio_from_videos(
+    #         processor_inputs.mm_data_items
+    #     )
+    #     processor_inputs.mm_data_items = mm_items
+    #     prompt = processor_inputs.prompt
+    #     if not isinstance(prompt, str):
+    #         tokenizer = self.info.get_tokenizer()
+    #         prompt = tokenizer.decode(prompt, skip_special_tokens=False)
+    #     for _ in audio_items:
+    #         prompt = prompt.replace("<video>", "<video>" + AUDIO_CONTEXT, 1)
+    #     processor_inputs.prompt = prompt
+    #     if processor_inputs.tokenization_kwargs is None:
+    #         processor_inputs.tokenization_kwargs = {}
+    #     (prompt_ids, mm_info, is_update_applied) = \
+    #         self._apply_hf_processor(processor_inputs, timing_ctx=timing_ctx)
+    #     prompt_ids, mm_placeholders = self._maybe_apply_prompt_updates(
+    #         mm_items=mm_items, prompt_ids=prompt_ids,
+    #         mm_kwargs=mm_info.kwargs,
+    #         mm_prompt_updates=mm_info.prompt_updates,
+    #         is_update_applied=is_update_applied,
+    #     )
+    #     mm_placeholder_ranges = {
+    #         modality: [item.to_range() for item in placeholders]
+    #         for modality, placeholders in mm_placeholders.items()
+    #     }
+    #     return MultiModalInputs(
+    #         type="multimodal", prompt_token_ids=prompt_ids,
+    #         mm_kwargs=mm_info.kwargs, mm_hashes=mm_info.hashes,
+    #         mm_placeholders=mm_placeholder_ranges,
+    #     )
 
     def _validate_mm_placeholders(
         self,
