@@ -434,6 +434,49 @@ class OpenCVDynamicVideoBackend(OpenCVVideoBackend):
 @VIDEO_LOADER_REGISTRY.register("nemotron_vl")
 class NemotronVLVideoBackend(OpenCVVideoBackend):
     @classmethod
+    def _load_bytes_pyav_fallback(
+        cls,
+        data: bytes,
+        num_frames: int = -1,
+        fps: int = -1,
+        **kwargs,
+    ) -> tuple[npt.NDArray, dict[str, Any]]:
+        """Fallback video loader using PyAV for files OpenCV cannot decode
+        (e.g. MP4s with missing moov atom or unusual containers)."""
+        import av
+        import numpy as np
+
+        container = av.open(BytesIO(data))
+        stream = container.streams.video[0]
+        original_fps = float(stream.average_rate) if stream.average_rate else 30.0
+        total_frames = stream.frames or 0
+
+        all_frames = []
+        for frame in container.decode(video=0):
+            all_frames.append(frame.to_ndarray(format="rgb24"))
+        container.close()
+
+        if not all_frames:
+            raise ValueError("PyAV fallback: no frames decoded from video")
+
+        frames_array = np.stack(all_frames)
+
+        if num_frames > 0 and len(frames_array) > num_frames:
+            indices = np.linspace(0, len(frames_array) - 1,
+                                  num_frames, dtype=int)
+            frames_array = frames_array[indices]
+        elif fps > 0 and original_fps > 0:
+            step = max(1, int(original_fps / fps))
+            frames_array = frames_array[::step]
+
+        metadata: dict[str, Any] = {
+            "fps": original_fps,
+            "total_frames": total_frames or len(all_frames),
+            "duration": len(all_frames) / original_fps if original_fps > 0 else 0,
+        }
+        return frames_array, metadata
+
+    @classmethod
     def load_bytes(
         cls,
         data: bytes,
@@ -443,14 +486,22 @@ class NemotronVLVideoBackend(OpenCVVideoBackend):
         frame_recovery: bool = False,
         **kwargs,
     ) -> tuple[npt.NDArray, dict[str, Any]]:
-        frames, metadata = OpenCVVideoBackend.load_bytes(
-            data,
-            num_frames=num_frames,
-            fps=fps,
-            max_duration=max_duration,
-            frame_recovery=frame_recovery,
-            **kwargs,
-        )
+        try:
+            frames, metadata = OpenCVVideoBackend.load_bytes(
+                data,
+                num_frames=num_frames,
+                fps=fps,
+                max_duration=max_duration,
+                frame_recovery=frame_recovery,
+                **kwargs,
+            )
+        except (ValueError, Exception) as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                "OpenCV failed to load video (%s), falling back to PyAV", e)
+            frames, metadata = cls._load_bytes_pyav_fallback(
+                data, num_frames=num_frames, fps=fps, **kwargs)
 
         # Keep raw video bytes so the processor can extract audio later
         metadata = dict(metadata)
