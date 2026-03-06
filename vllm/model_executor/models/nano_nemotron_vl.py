@@ -34,6 +34,7 @@ _CONV3D_DEBUG = _os.environ.get("CONV3D_DEBUG", "0") == "1"
 # Default for fast preprocessing; can be overridden per-request via
 # mm_processor_kwargs["use_fast_preprocessing"]
 _FAST_PREPROCESSING_DEFAULT = _os.environ.get("FAST_PREPROCESSING", "0") == "1"
+_VLLM_VIDEO_DEBUG = _os.environ.get("VLLM_VIDEO_DEBUG", "0") == "1"
 
 from vllm.config import VllmConfig
 from vllm.config.multimodal import BaseDummyOptions, VideoDummyOptions
@@ -1290,11 +1291,31 @@ class NanoNemotronVLProcessor(BaseNanoNemotronVLProcessor):
         else:
             videos_lst = [v[0] for v in videos]
             video_metadata_lst = [v[1] for v in videos]
+
+            if _VLLM_VIDEO_DEBUG:
+                for i, (v, m) in enumerate(zip(videos_lst, video_metadata_lst)):
+                    logger.info(
+                        "[VIDEO_DEBUG] _preprocess_video: video[%d] "
+                        "frames=%s dtype=%s, fps=%.2f, total_frames=%s, "
+                        "duration=%.1fs",
+                        i, v.shape, v.dtype,
+                        m.get("fps", -1),
+                        m.get("total_frames", "?"),
+                        m.get("duration", -1))
+
             pixel_values_lst_video = self._videos_to_pixel_values_lst(
                 videos_lst,
                 max_num_tiles=max_num_tiles,
                 use_fast_preprocessing=use_fast_preprocessing,
             )
+
+            if _VLLM_VIDEO_DEBUG:
+                for i, pv in enumerate(pixel_values_lst_video):
+                    logger.info(
+                        "[VIDEO_DEBUG] _preprocess_video: after "
+                        "_videos_to_pixel_values_lst, video[%d] "
+                        "pixel_values shape=%s dtype=%s",
+                        i, pv.shape, pv.dtype)
 
             # We use frame duration in milliseconds (as integer) to ensure
             # we have consistent timestamps calculation. At preprocessing
@@ -1918,6 +1939,27 @@ class NanoNemotronVLMultiModalProcessor(
         *,
         mm_uuids: MultiModalUUIDDict | None = None,
     ) -> MultiModalInputs:
+        if _VLLM_VIDEO_DEBUG:
+            _video_summary = "none"
+            if "video" in mm_data:
+                vids = mm_data["video"]
+                if isinstance(vids, (list, tuple)):
+                    _video_summary = f"{len(vids)} video(s)"
+                    for _vi, _vv in enumerate(vids):
+                        if hasattr(_vv, 'shape'):
+                            _video_summary += f" [v{_vi}: shape={_vv.shape}]"
+                        elif isinstance(_vv, tuple) and len(_vv) >= 1 and hasattr(_vv[0], 'shape'):
+                            _video_summary += f" [v{_vi}: frames={_vv[0].shape}]"
+                else:
+                    _video_summary = f"type={type(vids).__name__}"
+            logger.info(
+                "[VIDEO_DEBUG] apply() called: video=%s, "
+                "audio_in_video=%s, prompt_len=%s, mm_kwargs=%s",
+                _video_summary,
+                hf_processor_mm_kwargs.get("use_audio_in_video", False),
+                len(prompt) if isinstance(prompt, (str, list)) else "?",
+                {k: type(v).__name__ for k, v in hf_processor_mm_kwargs.items()})
+
         use_audio_in_video = bool(
             hf_processor_mm_kwargs.get("use_audio_in_video", False)
         )

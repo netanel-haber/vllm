@@ -14,7 +14,11 @@ if TYPE_CHECKING:
 from vllm.logger import init_logger
 from vllm.utils.registry import ExtensionManager
 
+import os as _os
+
 logger = init_logger(__name__)
+
+_VLLM_VIDEO_DEBUG = _os.environ.get("VLLM_VIDEO_DEBUG", "0") == "1"
 
 
 def resize_video(frames: npt.NDArray, size: tuple[int, int]) -> npt.NDArray:
@@ -446,10 +450,21 @@ class NemotronVLVideoBackend(OpenCVVideoBackend):
         import av
         import numpy as np
 
+        if _VLLM_VIDEO_DEBUG:
+            logger.info("[VIDEO_DEBUG] PyAV fallback: opening %d bytes, "
+                        "num_frames=%d, fps=%d", len(data), num_frames, fps)
+
         container = av.open(BytesIO(data))
         stream = container.streams.video[0]
         original_fps = float(stream.average_rate) if stream.average_rate else 30.0
         total_frames = stream.frames or 0
+
+        if _VLLM_VIDEO_DEBUG:
+            logger.info("[VIDEO_DEBUG] PyAV fallback: stream fps=%.2f, "
+                        "reported_frames=%d, codec=%s, resolution=%dx%d",
+                        original_fps, total_frames,
+                        stream.codec_context.name if stream.codec_context else "?",
+                        stream.width or 0, stream.height or 0)
 
         all_frames = []
         for frame in container.decode(video=0):
@@ -461,6 +476,10 @@ class NemotronVLVideoBackend(OpenCVVideoBackend):
 
         frames_array = np.stack(all_frames)
 
+        if _VLLM_VIDEO_DEBUG:
+            logger.info("[VIDEO_DEBUG] PyAV fallback: decoded %d frames, "
+                        "shape=%s", len(all_frames), frames_array.shape)
+
         if num_frames > 0 and len(frames_array) > num_frames:
             indices = np.linspace(0, len(frames_array) - 1,
                                   num_frames, dtype=int)
@@ -468,6 +487,10 @@ class NemotronVLVideoBackend(OpenCVVideoBackend):
         elif fps > 0 and original_fps > 0:
             step = max(1, int(original_fps / fps))
             frames_array = frames_array[::step]
+
+        if _VLLM_VIDEO_DEBUG:
+            logger.info("[VIDEO_DEBUG] PyAV fallback: after sampling, "
+                        "shape=%s", frames_array.shape)
 
         metadata: dict[str, Any] = {
             "fps": original_fps,
@@ -486,6 +509,10 @@ class NemotronVLVideoBackend(OpenCVVideoBackend):
         frame_recovery: bool = False,
         **kwargs,
     ) -> tuple[npt.NDArray, dict[str, Any]]:
+        if _VLLM_VIDEO_DEBUG:
+            logger.info("[VIDEO_DEBUG] NemotronVLVideoBackend.load_bytes: "
+                        "%d bytes, num_frames=%d, fps=%d, max_duration=%d",
+                        len(data), num_frames, fps, max_duration)
         try:
             frames, metadata = OpenCVVideoBackend.load_bytes(
                 data,
@@ -495,9 +522,13 @@ class NemotronVLVideoBackend(OpenCVVideoBackend):
                 frame_recovery=frame_recovery,
                 **kwargs,
             )
+            if _VLLM_VIDEO_DEBUG:
+                logger.info("[VIDEO_DEBUG] OpenCV success: frames shape=%s, "
+                            "fps=%.2f, total_frames=%s",
+                            frames.shape,
+                            metadata.get("fps", -1),
+                            metadata.get("total_frames", "?"))
         except (ValueError, Exception) as e:
-            import logging
-            logger = logging.getLogger(__name__)
             logger.warning(
                 "OpenCV failed to load video (%s), falling back to PyAV", e)
             frames, metadata = cls._load_bytes_pyav_fallback(
@@ -506,6 +537,11 @@ class NemotronVLVideoBackend(OpenCVVideoBackend):
         # Keep raw video bytes so the processor can extract audio later
         metadata = dict(metadata)
         metadata["original_video_bytes"] = data
+
+        if _VLLM_VIDEO_DEBUG:
+            logger.info("[VIDEO_DEBUG] NemotronVLVideoBackend.load_bytes done: "
+                        "frames shape=%s, keeping %d bytes for audio",
+                        frames.shape, len(data))
 
         return frames, metadata
 
