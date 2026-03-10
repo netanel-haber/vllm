@@ -848,6 +848,10 @@ def get_num_blocks(
     num_blocks = int(available_memory // page_size // num_layers)
     num_blocks = max(num_blocks, 0)
     num_blocks = may_override_num_blocks(vllm_config, num_blocks)
+    # Workaround: ensure num_blocks >= 3 so the minimal KV cache used for
+    # cuda graph profiling never has shape (2, 2, ...), which triggers an
+    # ambiguous layout assertion in _update_hybrid_attention_mamba_layout.
+    num_blocks = max(num_blocks, 3)
     return num_blocks
 
 
@@ -1109,6 +1113,8 @@ def get_kv_cache_config_from_groups(
             available_memory // kv_cache_groups[0].kv_cache_spec.page_size_bytes
         )
         num_blocks = may_override_num_blocks(vllm_config, num_blocks)
+        # Workaround: ensure num_blocks >= 3 (see get_num_blocks comment).
+        num_blocks = max(num_blocks, 3)
         per_layer_specs = kv_cache_groups[0].kv_cache_spec.kv_cache_specs
         kv_cache_tensors = [
             KVCacheTensor(
