@@ -547,6 +547,15 @@ class NemotronHForCausalLMConfig(VerifyAndUpdateConfig):
             cache_config.mamba_ssm_cache_dtype = mamba_ssm_cache_dtype
 
 
+class NemotronHNanoVLV2Config(VerifyAndUpdateConfig):
+    @staticmethod
+    def verify_and_update_model_config(model_config: "ModelConfig") -> None:
+        mm_config = model_config.multimodal_config
+        if mm_config is not None:
+            video_kwargs = mm_config.media_io_kwargs.setdefault("video", {})
+            video_kwargs.setdefault("video_backend", "nemotron_vl")
+
+
 MODELS_CONFIG_MAP: dict[str, type[VerifyAndUpdateConfig]] = {
     "GteModel": SnowflakeGteNewModelConfig,
     "GteNewModel": GteNewModelConfig,
@@ -568,4 +577,5 @@ MODELS_CONFIG_MAP: dict[str, type[VerifyAndUpdateConfig]] = {
     "FalconMambaForCausalLM": MambaModelConfig,
     "DeepseekV32ForCausalLM": DeepseekV32ForCausalLM,
     "NemotronHForCausalLM": NemotronHForCausalLMConfig,
+    "NemotronH_Nano_VL_V2": NemotronHNanoVLV2Config,
 }
