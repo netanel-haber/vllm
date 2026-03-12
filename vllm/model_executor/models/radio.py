@@ -9,6 +9,7 @@
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 import math
+import os as _os
 from collections.abc import Iterable
 from dataclasses import dataclass
 from itertools import accumulate, repeat
@@ -19,6 +20,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 from transformers import PretrainedConfig
+
+_CONV3D_DEBUG = _os.environ.get("CONV3D_DEBUG", "0") == "1"
 
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
@@ -311,14 +314,44 @@ class ViTPatchGenerator(nn.Module):
             feat=feat_dim,
         )
 
+        embedder_name = "video_embedder" if self.separate_video_embedder else "embedder"
+        if _CONV3D_DEBUG:
+            print("[CONV3D_DEBUG forward_video]")
+            print(f"  x.shape={list(x.shape)}, num_frames={num_frames}, T={T}")
+            print(f"  patches before reshape: N={N}, num_spatial={num_spatial}, "
+                  f"feat_dim={feat_dim}, pad_frames={pad_frames}")
+            print(f"  patches after reshape: "
+                  f"[{N_padded // T}, {num_spatial}, {T * feat_dim}]")
+            print(f"  using {embedder_name} "
+                  f"(separate_video_embedder={self.separate_video_embedder})")
+
         if self.separate_video_embedder:
             patches = self.video_embedder(patches)
         else:
             patches = self.embedder(patches)
 
+        if _CONV3D_DEBUG:
+            print(f"  patches after embedder: {list(patches.shape)}")
+
         patches, pos_enc = self.apply_pos_enc(patches, input_size=input_size)
 
+        if _CONV3D_DEBUG:
+            print(f"  patches after pos_enc: {list(patches.shape)}")
+
         patches = self.cls_token(patches)
+
+        if _CONV3D_DEBUG:
+            num_skip = self.num_cls_tokens + self.num_registers
+            print(f"  patches after cls_token: {list(patches.shape)}")
+            print(f"  num_cls_tokens={self.num_cls_tokens}, "
+                  f"num_registers={self.num_registers}, "
+                  f"num_skip={num_skip}")
+            expected_seq_len = num_spatial + num_skip
+            actual_seq_len = patches.shape[1]
+            print(f"  expected seq_len={expected_seq_len} "
+                  f"(num_spatial={num_spatial} + num_skip={num_skip}), "
+                  f"actual={actual_seq_len}, "
+                  f"match={expected_seq_len == actual_seq_len}")
 
         patches = self.patch_normalizer(patches)
         if self.return_pos_enc:
@@ -838,6 +871,11 @@ class RadioInternVisionModel(nn.Module):
 
         if num_frames_per_video is not None and imgs_sizes is not None and T > 1:
             # Dynamic-resolution video with temporal compression.
+            if _CONV3D_DEBUG:
+                print(f"[CONV3D_DEBUG RadioInternVisionModel.forward] "
+                      f"branch=DYNAMIC_VIDEO_TEMPORAL, "
+                      f"x.shape={list(x.shape)}, T={T}, "
+                      f"num_frames_per_video={num_frames_per_video}")
             hidden_states = self.patch_generator(
                 x,
                 imgs_sizes=imgs_sizes,
@@ -848,10 +886,20 @@ class RadioInternVisionModel(nn.Module):
             )
         elif num_frames is not None and T > 1:
             # Fixed-resolution video with temporal compression (legacy).
+            if _CONV3D_DEBUG:
+                print(f"[CONV3D_DEBUG RadioInternVisionModel.forward] "
+                      f"branch=FIXED_VIDEO_TEMPORAL (forward_video), "
+                      f"x.shape={list(x.shape)}, T={T}, num_frames={num_frames}")
             hidden_states = self.patch_generator.forward_video(x, num_frames)
             effective_sizes = None
         else:
             # Images (dynamic or fixed) or video without temporal compression.
+            if _CONV3D_DEBUG:
+                print(f"[CONV3D_DEBUG RadioInternVisionModel.forward] "
+                      f"branch=IMAGE_OR_NO_TEMPORAL, "
+                      f"x.shape={list(x.shape)}, T={T}, "
+                      f"imgs_sizes="
+                      f"{'len=' + str(len(imgs_sizes)) if imgs_sizes else None}")
             hidden_states = self.patch_generator(x, imgs_sizes=imgs_sizes)
             effective_sizes = imgs_sizes
 
@@ -876,6 +924,17 @@ class RadioInternVisionModel(nn.Module):
             mask_meta = self.inter_image_mask_metadata(
                 effective_sizes, device=hidden_states.device
             )
+
+        if _CONV3D_DEBUG:
+            mode = "PACKED-SEQ" if mask_meta is not None else "BATCH"
+            print("[CONV3D_DEBUG RadioInternVisionModel.forward] pre-encoder:")
+            print(f"  mode={mode}, hidden_states.shape={list(hidden_states.shape)}")
+            if mask_meta is not None:
+                print(
+                    f"  cu_seqlens (first 10)={mask_meta.cu_seqlens[:10].tolist()}, "
+                    f"max_seqlen={mask_meta.max_seqlen.item()}, "
+                    f"num_seqs={len(mask_meta.cu_seqlens) - 1}"
+                )
 
         encoder_outputs = self.encoder(inputs_embeds=hidden_states, mask_meta=mask_meta)
 
@@ -1020,9 +1079,17 @@ class RadioModel(nn.Module):
         num_skip = self.model.patch_generator.num_skip
         patch_size = self.model.patch_generator.patch_size
         num_cls_tokens = self.model.patch_generator.num_cls_tokens
+        if _CONV3D_DEBUG:
+            print("[CONV3D_DEBUG _extract_final]")
+            print(f"  encoder_output y.shape={list(y.shape)}, "
+                  f"num_skip={num_skip}, num_cls_tokens={num_cls_tokens}, "
+                  f"imgs_sizes={imgs_sizes}")
         if imgs_sizes is None:
             all_summary = y[:, :num_cls_tokens]
             all_feat = y[:, num_skip:]
+            if _CONV3D_DEBUG:
+                print(f"  fixed-res: all_feat.shape={list(all_feat.shape)} "
+                      f"(stripped first {num_skip} tokens per batch element)")
         else:
             all_patches = []
             summaries = []

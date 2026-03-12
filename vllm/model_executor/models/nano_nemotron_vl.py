@@ -9,6 +9,7 @@
 
 import copy
 import math
+import os as _os
 import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping, Sequence
@@ -24,6 +25,8 @@ import torch
 import torch.nn as nn
 from PIL import Image
 from transformers import BatchFeature, PretrainedConfig, TensorType
+
+_CONV3D_DEBUG = _os.environ.get("CONV3D_DEBUG", "0") == "1"
 
 from vllm.config import VllmConfig
 from vllm.config.multimodal import BaseDummyOptions, VideoDummyOptions
@@ -906,11 +909,35 @@ class BaseNanoNemotronVLProcessor(ABC):
             f"but found {parts.count('<image>')}"
         )
 
+        if _CONV3D_DEBUG:
+            print("[CONV3D_DEBUG _preprocess_image] replacement loop")
+            print(f"  len(parts)={len(parts)}, "
+                  f"<image> count={parts.count('<image>')}, "
+                  f"len(num_tokens_per_image)={len(num_tokens_per_image)}")
+            print(f"  text before (first 400 chars): "
+                  f"{text[0][:400]!r}")
+
         for i, (feature_size, num_patches) in enumerate(
             zip(num_tokens_per_image, image_num_patches, strict=True)
         ):
             image_repl = self.get_image_repl(feature_size, num_patches)
+            if _CONV3D_DEBUG:
+                is_image = "<image>" in str(parts[i])
+                print(f"  parts[{i}] is_<image>={is_image}, "
+                      f"feature_size={feature_size}, "
+                      f"num_patches={num_patches}, "
+                      f"repl_full_len={len(image_repl.full)}")
             parts[i] = parts[i].replace("<image>", image_repl.full)
+
+        if _CONV3D_DEBUG:
+            joined = "".join(parts)
+            remaining = joined.count("<image>")
+            img_start_count = joined.count("<img>")
+            img_end_count = joined.count("</img>")
+            print(f"  text after: <image> remaining={remaining}, "
+                  f"<img> count={img_start_count}, "
+                  f"</img> count={img_end_count}")
+
         text = ["".join(parts)]
 
         return text, image_inputs
@@ -1087,6 +1114,14 @@ class NanoNemotronVLProcessor(BaseNanoNemotronVLProcessor):
                     (frame_h * frame_w // patch_size**2) * (downsample_ratio**2)
                 )
                 num_tubelets = math.ceil(num_frames / T) if T > 1 else num_frames
+
+                if _CONV3D_DEBUG:
+                    print("[CONV3D_DEBUG _preprocess_video] video branch")
+                    print(f"  num_frames={num_frames}, T={T}, "
+                          f"num_tubelets={num_tubelets}")
+                    print(f"  frame_h={frame_h}, frame_w={frame_w}, "
+                          f"tokens_in_single_frame={tokens_in_single_frame}")
+                    print(f"  pixel_values.shape={pixel_values.shape}")
 
                 if (
                     self.video_pruning_rate is not None
@@ -1546,6 +1581,11 @@ class NanoNemotronBaseVLMultiModalProcessor(BaseMultiModalProcessor[_I]):
             ):
                 num_patches = int(local_image_num_patches[item_idx])
 
+            if _CONV3D_DEBUG:
+                print(f"[CONV3D_DEBUG get_replacement_custom] "
+                      f"item_idx={item_idx} → primary, "
+                      f"feature_size={feature_size}, "
+                      f"num_patches={num_patches}")
             return hf_processor.get_image_repl(feature_size, num_patches)
 
         return [
@@ -1783,6 +1823,13 @@ class NanoNemotronVLMultiModalProcessor(
                 tokens_per_frame = [feature_size] * num_tubelets
 
             frame_duration_ms = int(1000 / metadata["fps"])
+            if _CONV3D_DEBUG:
+                print(f"[CONV3D_DEBUG get_video_replacement_internvl] "
+                      f"item_idx={item_idx}, "
+                      f"feature_size={feature_size}, "
+                      f"num_patches={num_patches}, "
+                      f"T={T}, num_tubelets={num_tubelets}, "
+                      f"tokens_per_frame={tokens_per_frame}")
             return hf_processor.get_video_repl(
                 tokens_per_frame=tokens_per_frame,
                 frames_indices=metadata["frames_indices"],
@@ -2158,10 +2205,22 @@ class NemotronH_Nano_VL_V2(
         H_patches = H // patch_size
         W_patches = W // patch_size
 
+        if _CONV3D_DEBUG:
+            path = ("VIDEO (forward_video)"
+                    if (num_frames is not None and T > 1)
+                    else "IMAGE (standard)")
+            print(f"[CONV3D_DEBUG extract_feature] path={path}, "
+                  f"N={N}, T={T}, H={H}, W={W}, "
+                  f"H_patches={H_patches}, W_patches={W_patches}, "
+                  f"micro_batch_size={micro_batch_size}")
+
         vit_embeds_list = []
         for i in range(0, N, micro_batch_size):
             chunk = pixel_values[i : i + micro_batch_size]
             if num_frames is not None and T > 1:
+                if _CONV3D_DEBUG:
+                    print(f"  chunk[{i}:{i+chunk.shape[0]}] → "
+                          f"vision_model(num_frames={chunk.shape[0]})")
                 _, vit_embeds = self.vision_model(chunk, num_frames=chunk.shape[0])
             else:
                 _, vit_embeds = self.vision_model(chunk)
@@ -2252,8 +2311,14 @@ class NemotronH_Nano_VL_V2(
         T = self.video_temporal_patch_size
 
         if T > 1:
+            if _CONV3D_DEBUG:
+                print(f"[CONV3D_DEBUG _process_video_input] "
+                      f"TEMPORAL COMPRESSION path (T={T})")
             video_embeddings = self._extract_video_embeddings_temporal(video_input)
         else:
+            if _CONV3D_DEBUG:
+                print(f"[CONV3D_DEBUG _process_video_input] "
+                      f"standard path (T={T})")
             video_embeddings = self._process_image_input(video_input)
 
         final_video_embeddings: tuple[torch.Tensor, ...] = ()
@@ -2327,6 +2392,12 @@ class NemotronH_Nano_VL_V2(
         num_frames_per_video = video_input["num_patches"].tolist()
         hidden_size = self.config.text_config.hidden_size
 
+        if _CONV3D_DEBUG:
+            print("[CONV3D_DEBUG _extract_video_embeddings_temporal]")
+            print(f"  pixel_values.shape={pixel_values.shape}, "
+                  f"num_frames_per_video={num_frames_per_video}, "
+                  f"num_videos={len(num_frames_per_video)}")
+
         results: list[torch.Tensor] = []
         frame_offset = 0
         for nf in num_frames_per_video:
@@ -2334,7 +2405,16 @@ class NemotronH_Nano_VL_V2(
             frame_offset += nf
 
             vit_embeds = self.extract_feature(video_frames, num_frames=nf)
+
+            if _CONV3D_DEBUG:
+                print(f"  vit_embeds.shape after extract_feature={vit_embeds.shape}, "
+                      f"hidden_size={hidden_size}")
+
             results.append(vit_embeds.view(-1, hidden_size))
+
+        if _CONV3D_DEBUG:
+            print(f"  returning {len(results)} embeddings, "
+                  f"shapes={[r.shape for r in results]}")
 
         return tuple(results)
 
@@ -2544,14 +2624,26 @@ class NemotronH_Nano_VL_V2(
             if modality == "images":
                 image_input = modalities["images"]
                 if image_input["type"] == "image_embeds":
+                    if _CONV3D_DEBUG:
+                        print("[CONV3D_DEBUG embed_multimodal] "
+                              "images → image_embeds path")
                     image_embeddings = image_input["data"]
                 elif self.dynamic_resolution:
+                    if _CONV3D_DEBUG:
+                        print("[CONV3D_DEBUG embed_multimodal] "
+                              "images → dynamic resolution path")
                     assert image_input["type"] == "pixel_values_dynamic"
                     image_embeddings = self._process_image_input_dynamic(image_input)
                 else:
+                    if _CONV3D_DEBUG:
+                        print("[CONV3D_DEBUG embed_multimodal] "
+                              "images → standard image path")
                     image_embeddings = self._process_image_input(image_input)
                 multimodal_embeddings += tuple(image_embeddings)
             if modality == "videos":
+                if _CONV3D_DEBUG:
+                    print("[CONV3D_DEBUG embed_multimodal] "
+                          "videos → _process_video_input path")
                 video_input = modalities["videos"]
                 video_embeddings = self._process_video_input(video_input)
                 multimodal_embeddings += tuple(video_embeddings)
