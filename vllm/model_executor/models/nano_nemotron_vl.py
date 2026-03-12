@@ -1029,6 +1029,27 @@ class NanoNemotronVLProcessor(BaseNanoNemotronVLProcessor):
             IMG_CONTEXT, add_special_tokens=False
         )
 
+    @cached_property
+    def num_video_token(self) -> int:
+        """Token count per video frame, accounting for video_target_num_patches.
+
+        When video_target_num_patches is set the per-frame feature count
+        differs from the image-based num_image_token.  We use a square
+        dummy (1:1) to compute the feature_size because the dummy video is
+        square and the user confirmed that is acceptable.
+        """
+        if self.video_target_num_patches is not None:
+            _, _, feature_size = _get_video_target_size_and_feature_size(
+                orig_w=self.image_size,
+                orig_h=self.image_size,
+                target_patches=self.video_target_num_patches,
+                maintain_aspect_ratio=self.video_maintain_aspect_ratio,
+                patch_size=self.config.patch_size,
+                downsample_ratio=self.config.downsample_ratio,
+            )
+            return feature_size
+        return self.num_image_token
+
     @property
     def supports_video(self) -> bool:
         return self.video_token_id is not None
@@ -1483,7 +1504,7 @@ class NanoNemotronVLProcessingInfo(BaseNanoNemotronVLProcessingInfo):
         T = processor.video_temporal_patch_size
 
         max_image_tokens = self.get_max_image_tokens() * max_images
-        tokens_per_tubelet = processor.num_image_token
+        tokens_per_tubelet = processor.num_video_token
         max_total_tubelets = (seq_len - max_image_tokens) // tokens_per_tubelet
         max_tubelets_per_video = max_total_tubelets // max(max_videos, 1)
         max_frames_per_video = max_tubelets_per_video * T
@@ -1964,6 +1985,24 @@ class NanoNemotronVLDummyInputsBuilder(
         if self.info.supports_video:
             config = self.info.get_hf_config()
             image_size: int = config.force_image_size
+            processor = self.info.get_hf_processor()
+
+            # When video_target_num_patches is set the per-frame pixel
+            # resolution can exceed image_size.  Use the actual target
+            # dimensions so that profiling sees the correct upper bound.
+            if processor.video_target_num_patches is not None:
+                target_w, target_h, _ = _get_video_target_size_and_feature_size(
+                    orig_w=image_size,
+                    orig_h=image_size,
+                    target_patches=processor.video_target_num_patches,
+                    maintain_aspect_ratio=processor.video_maintain_aspect_ratio,
+                    patch_size=config.patch_size,
+                    downsample_ratio=config.downsample_ratio,
+                )
+                video_width, video_height = target_w, target_h
+            else:
+                video_width, video_height = image_size, image_size
+
             target_num_frames = self.info.get_num_frames_with_most_features(
                 seq_len, mm_counts
             )
@@ -1977,8 +2016,8 @@ class NanoNemotronVLDummyInputsBuilder(
             video_overrides = mm_options.get("video")
             dummy_video = {
                 "video": self._get_dummy_videos(
-                    width=image_size,
-                    height=image_size,
+                    width=video_width,
+                    height=video_height,
                     num_frames=target_num_frames,
                     num_videos=num_videos,
                     overrides=video_overrides,
