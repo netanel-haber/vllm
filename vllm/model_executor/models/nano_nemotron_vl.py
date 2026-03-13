@@ -1357,7 +1357,7 @@ class NanoNemotronVLProcessor(BaseNanoNemotronVLProcessor):
             all_timestamps = calculate_timestamps(frames_indices, frame_duration_ms)
 
             frame_separators = []
-            for i in range(0, num_frames, T):  # Every group
+            for group_idx, i in enumerate(range(0, num_frames, T)):
                 group_frames = []
                 for j in range(T):  # Every frame in the group
                     frame_idx = i + j
@@ -1370,7 +1370,11 @@ class NanoNemotronVLProcessor(BaseNanoNemotronVLProcessor):
                         )
                 if group_frames:
                     # Join by `and` if there are >1 frame, otherwise no `and`
-                    frame_separators.append(" and ".join(group_frames) + ": ")
+                    # Prepend \n to match training format (except first group)
+                    sep = " and ".join(group_frames) + ": "
+                    if group_idx > 0:
+                        sep = "\n" + sep
+                    frame_separators.append(sep)
         elif timestamps_enabled:
             timestamps = calculate_timestamps(frames_indices, frame_duration_ms)
 
@@ -1378,12 +1382,15 @@ class NanoNemotronVLProcessor(BaseNanoNemotronVLProcessor):
                 "timestamps and tokens_per_frame must have the same length"
             )
             frame_separators = [
+                ("\n" if i > 0 else "") +
                 f"Frame {i + 1} sampled at {timestamp:.2f} seconds: "
                 for i, timestamp in enumerate(timestamps)
             ]
         else:
             frame_separators = [
-                f"Frame {i + 1}: " for i, _ in enumerate(tokens_per_frame)
+                ("\n" if i > 0 else "") + 
+                f"Frame {i + 1}: "
+                for i, _ in enumerate(tokens_per_frame)
             ]
 
         # Tokenize frame separator independently
@@ -1395,10 +1402,7 @@ class NanoNemotronVLProcessor(BaseNanoNemotronVLProcessor):
         # across boundaries. This ensures consistent tokenization regardless of
         # num_tokens_per_frame values.
 
-        # Prefix and newline match the training format from Megatron-LM
-        prefix_token_ids = _seq2tokens(tokenizer, "This is a video:\n")
-        newline_token_ids = _seq2tokens(tokenizer, "\n")
-        all_token_ids = list(prefix_token_ids)
+        all_token_ids = []
         for i, num_tokens in enumerate(tokens_per_frame):
             frame_sep_token_ids = frame_separators_tokenized[i]
             all_token_ids.extend(frame_sep_token_ids)
@@ -1407,7 +1411,6 @@ class NanoNemotronVLProcessor(BaseNanoNemotronVLProcessor):
             all_token_ids.extend(img_start_token_ids)
             all_token_ids.extend(img_context_token_ids * num_tokens)
             all_token_ids.extend(img_end_token_ids)
-            all_token_ids.extend(newline_token_ids)
 
         return PromptUpdateDetails.from_seq(all_token_ids)
 
@@ -1696,6 +1699,20 @@ class NanoNemotronVLMultiModalProcessor(
         }
 
         processor_inputs.hf_processor_mm_kwargs = hf_processor_mm_kwargs
+
+        # Prepend "This is a video:\n" before <video> to match training format
+        if "video" in processor_inputs.mm_data_items:
+            prompt = processor_inputs.prompt
+            tokenizer = self.info.get_tokenizer()
+            if not isinstance(prompt, str):
+                prompt = tokenizer.decode(prompt, skip_special_tokens=False)
+            if "<video>" in prompt and "This is a video:" not in prompt:
+                prompt = prompt.replace(
+                    "<video>", "This is a video:\n<video>"
+                )
+                processor_inputs.prompt = tokenizer.encode(
+                    prompt, add_special_tokens=False
+                )
 
         if not (
             use_audio_in_video
