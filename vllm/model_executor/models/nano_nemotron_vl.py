@@ -1394,7 +1394,11 @@ class NanoNemotronVLProcessor(BaseNanoNemotronVLProcessor):
         # Tokenize each component independently to avoid tokenizer merging tokens
         # across boundaries. This ensures consistent tokenization regardless of
         # num_tokens_per_frame values.
-        all_token_ids = []
+
+        # Prefix and newline match the training format from Megatron-LM
+        prefix_token_ids = _seq2tokens(tokenizer, "This is a video:\n")
+        newline_token_ids = _seq2tokens(tokenizer, "\n")
+        all_token_ids = list(prefix_token_ids)
         for i, num_tokens in enumerate(tokens_per_frame):
             frame_sep_token_ids = frame_separators_tokenized[i]
             all_token_ids.extend(frame_sep_token_ids)
@@ -1403,6 +1407,7 @@ class NanoNemotronVLProcessor(BaseNanoNemotronVLProcessor):
             all_token_ids.extend(img_start_token_ids)
             all_token_ids.extend(img_context_token_ids * num_tokens)
             all_token_ids.extend(img_end_token_ids)
+            all_token_ids.extend(newline_token_ids)
 
         return PromptUpdateDetails.from_seq(all_token_ids)
 
