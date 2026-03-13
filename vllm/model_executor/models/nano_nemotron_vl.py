@@ -1190,8 +1190,16 @@ class NanoNemotronVLProcessor(BaseNanoNemotronVLProcessor):
         audios: list[npt.NDArray],
     ):
         if len(audios) == 0:
+            if _CONV3D_DEBUG:
+                print("[CONV3D_DEBUG _preprocess_audio] no audios, skipping")
             return text, {}
         assert self.audio_extractor is not None
+
+        if _CONV3D_DEBUG:
+            print(f"[CONV3D_DEBUG _preprocess_audio] num_audios={len(audios)}, "
+                  f"audio_shapes={[a.shape for a in audios]}, "
+                  f"audio_dtypes={[a.dtype for a in audios]}, "
+                  f"sampling_rate={self.audio_extractor.sampling_rate}")
 
         extractor = self.audio_extractor
 
@@ -2471,6 +2479,16 @@ class NemotronH_Nano_VL_V2(
         feature_attention_mask = audio_input.feature_attention_mask
         target_device = next(self.sound_encoder.parameters()).device
 
+        if _CONV3D_DEBUG:
+            if isinstance(input_audio_features, list):
+                print(f"[CONV3D_DEBUG _process_audio_input] input is list, "
+                      f"num_clips={len(input_audio_features)}, "
+                      f"shapes={[f.shape for f in input_audio_features]}")
+            else:
+                print(f"[CONV3D_DEBUG _process_audio_input] input_audio_features.shape="
+                      f"{input_audio_features.shape}, "
+                      f"feature_attention_mask.shape={feature_attention_mask.shape}")
+
         # When cross-request batching combines audio clips with different
         # time dimensions, _reduce_data returns a list instead of a stacked
         # tensor. Pad to the max time dim and stack; the attention mask
@@ -2505,6 +2523,13 @@ class NemotronH_Nano_VL_V2(
         for i in range(sound_embeds.shape[0]):
             valid_len = valid_output_lens[i].item()
             truncated_embeds.append(sound_embeds[i, :valid_len])
+
+        if _CONV3D_DEBUG:
+            print(f"[CONV3D_DEBUG _process_audio_input] "
+                  f"sound_embeds.shape={sound_embeds.shape}, "
+                  f"valid_input_lens={valid_input_lens.tolist()}, "
+                  f"valid_output_lens={valid_output_lens.tolist()}, "
+                  f"truncated_shapes={[t.shape for t in truncated_embeds]}")
 
         return tuple(truncated_embeds)
 
