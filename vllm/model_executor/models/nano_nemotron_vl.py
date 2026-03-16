@@ -961,9 +961,7 @@ class NanoNemotronVLProcessor(BaseNanoNemotronVLProcessor):
 
         # Video params live exclusively in vision_config
         vision_config = getattr(config, "vision_config", config)
-        self.video_temporal_patch_size: int = getattr(
-            vision_config, "video_temporal_patch_size", 1
-        )
+        self.video_temporal_patch_size: int = vision_config.video_temporal_patch_size
         self.video_maintain_aspect_ratio: bool = getattr(
             vision_config, "video_maintain_aspect_ratio", False
         )
@@ -1269,7 +1267,6 @@ class NanoNemotronVLProcessor(BaseNanoNemotronVLProcessor):
         img_end_token_ids: list[int],
         img_context_token_ids: list[int],
         video_temporal_patch_size: int = 1,
-        video_prompt_format: int = 2,
     ) -> PromptUpdateDetails[list[int]]:
         """
         Build prompt replacement for a video.
@@ -1298,7 +1295,6 @@ class NanoNemotronVLProcessor(BaseNanoNemotronVLProcessor):
             img_end_token_ids (list[int]): pre-tokenized IMG_END tokens
             img_context_token_ids (list[int]): pre-tokenized IMG_CONTEXT tokens
             video_temporal_patch_size (int): temporal patch size for videos
-            video_prompt_format (int): video prompt format
         """
         # TODO: Add support of frame_duration_ms to be None
         # At preprocessing step we should allow absent / metadata without
@@ -1308,9 +1304,6 @@ class NanoNemotronVLProcessor(BaseNanoNemotronVLProcessor):
         num_frames = len(frames_indices)
 
         if T > 1 and timestamps_enabled:
-            assert video_prompt_format == 2, (
-                "Only video prompt format 2 is currently supported"
-            )
             all_timestamps = calculate_timestamps(frames_indices, frame_duration_ms)
 
             frame_separators = []
@@ -1645,18 +1638,6 @@ class NanoNemotronVLMultiModalProcessor(
         }
 
         processor_inputs.hf_processor_mm_kwargs = hf_processor_mm_kwargs
-
-        # Prepend "This is a video:\n" before <video> to match training format
-        if "video" in processor_inputs.mm_data_items:
-            prompt = processor_inputs.prompt
-            tokenizer = self.info.get_tokenizer()
-            if not isinstance(prompt, str):
-                prompt = tokenizer.decode(prompt, skip_special_tokens=False)
-            if "<video>" in prompt and "This is a video:" not in prompt:
-                prompt = prompt.replace("<video>", "This is a video:\n<video>")
-                processor_inputs.prompt = tokenizer.encode(
-                    prompt, add_special_tokens=False
-                )
 
         if not (
             use_audio_in_video
@@ -2048,9 +2029,7 @@ class NemotronH_Nano_VL_V2(
         self.video_pruning_rate = multimodal_config.video_pruning_rate
 
         vision_config = getattr(config, "vision_config", config)
-        self.video_temporal_patch_size: int = getattr(
-            vision_config, "video_temporal_patch_size", 1
-        )
+        self.video_temporal_patch_size: int = vision_config.video_temporal_patch_size
 
         with self._mark_language_model(vllm_config):
             self.language_model = init_vllm_registered_model(
@@ -2529,7 +2508,7 @@ class NemotronH_Nano_VL_V2(
                     and t.shape[-1] == pixel_values_flat_video[0].shape[-1]
                     for t in pixel_values_flat_video
                 ):
-                    raise NotImplementedError(
+                    raise ValueError(
                         "Batched video inference with different spatial"
                         " dimensions is not yet supported. To process a batch"
                         " of videos with different spatial dimensions, process"
@@ -2691,8 +2670,7 @@ class NemotronH_Nano_VL_V2(
 
         self.language_model.load_weights(llm_weights)
         self.vision_model.load_weights(vision_weights)
-        if self.sound_encoder is not None:
-            assert len(sound_weights) > 0
+        if self.sound_encoder is not None and len(sound_weights) > 0:
             self.sound_encoder.load_weights(sound_weights)
 
     def get_vit_model_from_radio_config(self, hf_config):

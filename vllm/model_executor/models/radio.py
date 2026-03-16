@@ -176,6 +176,7 @@ class ViTPatchGenerator(nn.Module):
                 temporal_patch_size=temporal_patch_size,
                 **factory,
             )
+            self._video_embedder_loaded = False
 
         if abs_pos:
             scale = embed_dim**-0.5
@@ -224,6 +225,12 @@ class ViTPatchGenerator(nn.Module):
         Returns:
             Embedded patches with temporal compression applied.
         """
+        if not self._video_embedder_loaded:
+            raise ValueError(
+                "Temporal compression (video_temporal_patch_size > 1) requires "
+                "video_embedder weights, but they were never loaded. "
+                "Ensure the checkpoint was trained with temporal compression."
+            )
         T = self.temporal_patch_size
         input_size = x.shape[2:]
 
@@ -232,7 +239,7 @@ class ViTPatchGenerator(nn.Module):
 
         # Pad to a multiple of T by repeating the last frame so that
         # all tubelets have exactly T frames.
-        num_pad_frames = (T - num_frames % T) % T
+        num_pad_frames = (-num_frames) % T
         if num_pad_frames > 0:
             last_frame_dup = patches[-1:].expand(num_pad_frames, -1, -1)
             patches = torch.cat([patches, last_frame_dup], dim=0)
@@ -658,14 +665,6 @@ class RadioInternVisionModel(nn.Module):
     ) -> torch.FloatTensor:
         T = self.temporal_patch_size
 
-        if num_frames is not None and T > 1:
-            # Fixed-resolution video with temporal compression.
-            hidden_states = self.patch_generator.forward_video(x)
-            effective_sizes = None
-        else:
-            hidden_states = self.patch_generator(x, imgs_sizes=imgs_sizes)
-            effective_sizes = imgs_sizes
-
         # Build packed-sequence metadata for MMEncoderAttention when needed.
         mask_meta = None
         packed_batch_size = None  # Original batch size before packing
@@ -673,19 +672,20 @@ class RadioInternVisionModel(nn.Module):
         if num_frames is not None and T > 1:
             # Conv3d video: all tubelets have the same sequence length.
             # Pack [num_tubelets, seq_per_tubelet, hidden] → [1, total, hidden]
-            packed_batch_size = hidden_states.shape[0]
-            seq_per_tubelet = hidden_states.shape[1]
-            hidden_states = hidden_states.reshape(1, -1, hidden_states.shape[-1])
+            hidden_states = self.patch_generator.forward_video(x)
+            packed_batch_size, seq_per_tubelet, hidden_dim = hidden_states.shape
+            hidden_states = hidden_states.reshape(1, -1, hidden_dim)
             mask_meta = self._inter_image_mask_metadata_from_seq_lens(
                 [seq_per_tubelet] * packed_batch_size, device=hidden_states.device
             )
-        elif effective_sizes is not None and len(effective_sizes) > 1:
-            # Dynamic-res images/tubelets: variable sequence lengths.
-            # hidden_states is already [1, total_seq, hidden] from the
-            # dynamic-res patch generator. Compute cu_seqlens from sizes.
-            mask_meta = self.inter_image_mask_metadata(
-                effective_sizes, device=hidden_states.device
-            )
+        else:
+            # Images for any model, or video for non-conv3d model
+            hidden_states = self.patch_generator(x, imgs_sizes=imgs_sizes)
+            if imgs_sizes is not None and len(imgs_sizes) > 1:
+                # Dynamic resolution w/ > 1 image, create attn mask
+                mask_meta = self.inter_image_mask_metadata(
+                    imgs_sizes, device=hidden_states.device
+                )
 
         encoder_outputs = self.encoder(inputs_embeds=hidden_states, mask_meta=mask_meta)
 
@@ -750,7 +750,6 @@ class RadioModel(nn.Module):
     def load_weights(self, weights) -> set[str]:
         loaded_params: set[str] = set()
         params_dict = dict(self.named_parameters())
-        temporal_patch_size = self.model.temporal_patch_size
 
         if isinstance(weights, dict):
             weights_list = list(weights.items())
@@ -795,17 +794,8 @@ class RadioModel(nn.Module):
                 weight_loader(param, weight)
                 loaded_params.add(vllm_key)
 
-        if (
-            temporal_patch_size > 1
-            and "model.patch_generator.video_embedder.weight" in params_dict
-            and "model.patch_generator.video_embedder.weight" not in loaded_params
-        ):
-            raise ValueError(
-                "Temporal compression (video_temporal_patch_size > 1) requires "
-                "video_embedder weights in the checkpoint, but "
-                "'model.patch_generator.video_embedder.weight' was not loaded. "
-                "Ensure the checkpoint was trained with temporal compression."
-            )
+        if "model.patch_generator.video_embedder.weight" in loaded_params:
+            self.model.patch_generator._video_embedder_loaded = True
 
         return loaded_params
 
