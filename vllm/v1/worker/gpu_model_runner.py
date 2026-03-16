@@ -6289,7 +6289,6 @@ class GPUModelRunner(
             corresponding memory buffer for KV cache.
         """
         kv_caches: dict[str, torch.Tensor] = {}
-        kv_pairs_first: dict[str, bool] = {}
         has_attn, has_mamba = False, False
         for group in self._kv_cache_spec_attn_group_iterator():
             kv_cache_spec = group.kv_cache_spec
@@ -6317,19 +6316,6 @@ class GPUModelRunner(
                         kv_cache_spec.num_kv_heads,
                         kv_cache_spec.head_size,
                         cache_dtype_str=self.cache_config.cache_dtype,
-                    )
-                    # Detect layout: check which position the backend places
-                    # num_blocks in by calling get_kv_cache_shape with a
-                    # sentinel value. This avoids ambiguity when num_blocks==2.
-                    probe_shape = attn_backend.get_kv_cache_shape(
-                        1,  # sentinel num_blocks
-                        kernel_block_size,
-                        kv_cache_spec.num_kv_heads,
-                        kv_cache_spec.head_size,
-                        cache_dtype_str=self.cache_config.cache_dtype,
-                    )
-                    kv_pairs_first[layer_name] = (
-                        probe_shape[0] == 2 and probe_shape[1] == 1
                     )
                     dtype = kv_cache_spec.dtype
                     try:
@@ -6384,14 +6370,12 @@ class GPUModelRunner(
                     raise NotImplementedError
 
         if has_attn and has_mamba:
-            self._update_hybrid_attention_mamba_layout(kv_caches, kv_pairs_first)
+            self._update_hybrid_attention_mamba_layout(kv_caches)
 
         return kv_caches
 
     def _update_hybrid_attention_mamba_layout(
-        self,
-        kv_caches: dict[str, torch.Tensor],
-        kv_pairs_first: dict[str, bool],
+        self, kv_caches: dict[str, torch.Tensor]
     ) -> None:
         """
         Update the layout of attention layers from (2, num_blocks, ...) to
@@ -6399,17 +6383,18 @@ class GPUModelRunner(
 
         Args:
             kv_caches: The KV cache buffer of each layer.
-            kv_pairs_first: Whether each attention layer's backend produced
-                the KV pairs dimension first (i.e. shape = (2, num_blocks, ...)).
         """
 
         for group in self._kv_cache_spec_attn_group_iterator():
             kv_cache_spec = group.kv_cache_spec
             for layer_name in group.layer_names:
                 kv_cache = kv_caches[layer_name]
-                if isinstance(kv_cache_spec, AttentionSpec) and kv_pairs_first.get(
-                    layer_name, False
-                ):
+                if isinstance(kv_cache_spec, AttentionSpec) and kv_cache.shape[0] == 2:
+                    assert kv_cache.shape[1] != 2, (
+                        "Fail to determine whether the layout is "
+                        "(2, num_blocks, ...) or (num_blocks, 2, ...) for "
+                        f"a tensor of shape {kv_cache.shape}"
+                    )
                     hidden_size = kv_cache.shape[2:].numel()
                     kv_cache.as_strided_(
                         size=kv_cache.shape,
