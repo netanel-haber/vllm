@@ -961,7 +961,9 @@ class NanoNemotronVLProcessor(BaseNanoNemotronVLProcessor):
 
         # Video params live exclusively in vision_config
         vision_config = getattr(config, "vision_config", config)
-        self.video_temporal_patch_size: int = vision_config.video_temporal_patch_size
+        self.video_temporal_patch_size: int = getattr(
+            vision_config, "video_temporal_patch_size", 1
+        )
         self.video_maintain_aspect_ratio: bool = getattr(
             vision_config, "video_maintain_aspect_ratio", False
         )
@@ -1639,6 +1641,18 @@ class NanoNemotronVLMultiModalProcessor(
 
         processor_inputs.hf_processor_mm_kwargs = hf_processor_mm_kwargs
 
+        # Prepend "This is a video:\n" before <video> to match training format
+        if "video" in processor_inputs.mm_data_items:
+            prompt = processor_inputs.prompt
+            tokenizer = self.info.get_tokenizer()
+            if not isinstance(prompt, str):
+                prompt = tokenizer.decode(prompt, skip_special_tokens=False)
+            if "<video>" in prompt and "This is a video:" not in prompt:
+                prompt = prompt.replace("<video>", "This is a video:\n<video>")
+                processor_inputs.prompt = tokenizer.encode(
+                    prompt, add_special_tokens=False
+                )
+
         if not (
             use_audio_in_video
             and "video" in processor_inputs.mm_data_items
@@ -2029,7 +2043,9 @@ class NemotronH_Nano_VL_V2(
         self.video_pruning_rate = multimodal_config.video_pruning_rate
 
         vision_config = getattr(config, "vision_config", config)
-        self.video_temporal_patch_size: int = vision_config.video_temporal_patch_size
+        self.video_temporal_patch_size: int = getattr(
+            vision_config, "video_temporal_patch_size", 1
+        )
 
         with self._mark_language_model(vllm_config):
             self.language_model = init_vllm_registered_model(
