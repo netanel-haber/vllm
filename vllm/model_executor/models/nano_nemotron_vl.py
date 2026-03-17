@@ -2015,6 +2015,9 @@ class NanoNemotronVLDummyInputsBuilder(
 class NemotronH_Nano_VL_V2(
     nn.Module, HasInnerState, IsHybrid, SupportsMultiModal, SupportsMultiModalPruning
 ):
+    requires_sequential_video_encoding = True
+    """Temporarily needed for conv3d, since it doesn't yet support batching"""
+
     @classmethod
     def get_placeholder_str(cls, modality: str, i: int) -> str | None:
         if modality.startswith("image"):
@@ -2519,17 +2522,6 @@ class NemotronH_Nano_VL_V2(
                 pixel_values_flat_video = list(pixel_values_flat_video)
 
             if not torch.is_tensor(pixel_values_flat_video):
-                if not all(
-                    t.shape[-2] == pixel_values_flat_video[0].shape[-2]
-                    and t.shape[-1] == pixel_values_flat_video[0].shape[-1]
-                    for t in pixel_values_flat_video
-                ):
-                    raise ValueError(
-                        "Batched video inference with different spatial"
-                        " dimensions is not yet supported. To process a batch"
-                        " of videos with different spatial dimensions, process"
-                        " one video at a time."
-                    )
                 pixel_values_flat_video = torch.cat(pixel_values_flat_video, dim=0)
 
             expected_h = pixel_values_flat_video.shape[-2]
