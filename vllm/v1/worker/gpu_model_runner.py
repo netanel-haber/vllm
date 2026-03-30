@@ -6673,11 +6673,11 @@ class GPUModelRunner(
             for layer_name in group.layer_names:
                 kv_cache = kv_caches[layer_name]
                 if isinstance(kv_cache_spec, AttentionSpec) and kv_cache.shape[0] == 2:
-                    assert kv_cache.shape[1] != 2, (
-                        "Fail to determine whether the layout is "
-                        "(2, num_blocks, ...) or (num_blocks, 2, ...) for "
-                        f"a tensor of shape {kv_cache.shape}"
-                    )
+                    # Fresh allocations are always in (2, num_blocks, ...) layout.
+                    # Transform to (num_blocks, 2, ...) by reinterpreting strides.
+                    # Note: when num_blocks == 2, shape[0] == shape[1] == 2, but
+                    # the allocation order is always (K/V=2, num_blocks, ...) so
+                    # transformation is always needed here.
                     hidden_size = kv_cache.shape[2:].numel()
                     kv_cache.as_strided_(
                         size=kv_cache.shape,
