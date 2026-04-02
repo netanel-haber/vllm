@@ -61,9 +61,10 @@ class ProjectedParakeet(nn.Module):
     def forward(
         self, input_features: torch.Tensor, attention_mask: torch.Tensor | None = None
     ) -> torch.Tensor:
-        outputs = self.encoder(
-            input_features=input_features, attention_mask=attention_mask
-        )
+        with torch.backends.cudnn.flags(enabled=False):
+            outputs = self.encoder(
+                input_features=input_features, attention_mask=attention_mask
+            )
         outputs = outputs.last_hidden_state
         outputs = outputs.to(dtype=torch.bfloat16)
         outputs = self.projection(outputs)
