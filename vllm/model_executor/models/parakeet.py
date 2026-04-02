@@ -54,13 +54,16 @@ class ProjectedParakeet(nn.Module):
             config, llm_hidden_size=llm_hidden_size, max_model_len=max_model_len
         )
         self.encoder = HFParakeetEncoder(self.config)
-        self.encoder = self.encoder.to(dtype)
+        self.encoder = self.encoder.to(torch.float32)
         self.projection = ParakeetProjection(self.config)
         self.projection = self.projection.to(dtype)
 
     def forward(
         self, input_features: torch.Tensor, attention_mask: torch.Tensor | None = None
     ) -> torch.Tensor:
+        # Disable cuDNN for the Conv2d subsampling layers in the Parakeet encoder.
+        # cuDNN fails to initialize in vLLM's EngineCore subprocess when running
+        # float32 convolutions; the PyTorch fallback path works correctly.
         with torch.backends.cudnn.flags(enabled=False):
             outputs = self.encoder(
                 input_features=input_features, attention_mask=attention_mask

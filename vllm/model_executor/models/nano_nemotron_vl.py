@@ -1211,7 +1211,7 @@ class NemotronH_Nano_VL_V2(
         target_device = next(self.sound_encoder.parameters()).device
 
         input_audio_features = input_audio_features.to(
-            dtype=self.llm_dtype, device=target_device
+            dtype=torch.float32, device=target_device
         )
         feature_attention_mask = feature_attention_mask.to(device=target_device)
         sound_embeds = self.sound_encoder(input_audio_features, feature_attention_mask)
@@ -1251,6 +1251,7 @@ class NemotronH_Nano_VL_V2(
         These embeddings will replace the placeholder embeddings to create
         input_embeds for the LLM.
         """
+        device = video_embeddings.device
         tokenizer = cached_tokenizer_from_config(self.model_config)
 
         # Generate video replacement token IDs using get_video_repl
@@ -1269,10 +1270,10 @@ class NemotronH_Nano_VL_V2(
         )
 
         # video_repl.full is a list of token IDs
-        repl_token_ids = torch.tensor(video_repl.full)
+        repl_token_ids = torch.tensor(video_repl.full, device=device)
 
         # Get embedding token IDs for image context (use pre-tokenized version)
-        embed_token_ids = torch.tensor(self._img_context_token_ids)
+        embed_token_ids = torch.tensor(self._img_context_token_ids, device=device)
 
         # Create mask for video embedding positions
         is_video_embed = torch.isin(repl_token_ids, embed_token_ids)
