@@ -107,6 +107,26 @@ if flashinfer_comm is not None:
 
     MiB = 1024 * 1024
 
+    def _is_trtllm_row_major_padded_view(tensor: torch.Tensor | None) -> bool:
+        if tensor is None:
+            return False
+        assert tensor.ndim == 2
+
+        row_stride, col_stride = tensor.stride()
+        return (
+            col_stride == 1
+            and row_stride > tensor.shape[1]
+            and tensor.storage_offset() % row_stride == 0
+        )
+
+    def _expand_trtllm_row_major_padded_view(tensor: torch.Tensor) -> torch.Tensor:
+        row_stride = tensor.stride(0)
+        return tensor.as_strided(
+            size=(tensor.shape[0], row_stride),
+            stride=(row_stride, 1),
+            storage_offset=tensor.storage_offset(),
+        )
+
     def call_trtllm_fused_allreduce_norm(
         allreduce_in: torch.Tensor,
         residual: torch.Tensor,
@@ -177,8 +197,57 @@ if flashinfer_comm is not None:
         layout_code = None
         # layout_code only supported by trtllm backend
         if workspace.backend == "trtllm":
-            # in vllm we only support swizzled layout
             layout_code = flashinfer_comm.QuantizationSFLayout.SWIZZLED_128x4
+            if any(
+                _is_trtllm_row_major_padded_view(t)
+                for t in (allreduce_in, residual, norm_out, quant_out)
+            ):
+                from flashinfer.comm.trtllm_ar import get_trtllm_comm_module
+
+                trtllm_comm = get_trtllm_comm_module()
+                token_num, hidden_dim = allreduce_in.shape
+                allreduce_in_full = _expand_trtllm_row_major_padded_view(allreduce_in)
+                residual_full = _expand_trtllm_row_major_padded_view(residual)
+                residual_out_full = (
+                    residual_full
+                    if norm_out is None
+                    else _expand_trtllm_row_major_padded_view(allreduce_in)
+                )
+                norm_out_full = (
+                    _expand_trtllm_row_major_padded_view(norm_out)
+                    if norm_out is not None
+                    else allreduce_in_full
+                )
+                quant_out_full = (
+                    _expand_trtllm_row_major_padded_view(quant_out)
+                    if quant_out is not None
+                    else None
+                )
+
+                trtllm_comm.trtllm_allreduce_fusion(
+                    allreduce_in=allreduce_in_full,
+                    world_size=workspace.world_size,
+                    world_rank=workspace.rank,
+                    token_num=token_num,
+                    hidden_dim=hidden_dim,
+                    workspace_ptrs=workspace.workspace_tensor,
+                    launch_with_pdl=launch_with_pdl,
+                    use_oneshot=use_oneshot,
+                    trigger_completion_at_end=launch_with_pdl,
+                    fp32_acc=fp32_acc,
+                    pattern_code=pattern_code,
+                    allreduce_out=torch.empty_like(allreduce_in_full),
+                    residual_in=residual_full,
+                    residual_out=residual_out_full,
+                    norm_out=norm_out_full,
+                    quant_out=quant_out_full,
+                    scale_out=scale_out,
+                    rms_gamma=rms_gamma,
+                    rms_eps=rms_eps,
+                    scale_factor=scale_factor,
+                    layout_code=layout_code,
+                )
+                return
 
         flashinfer_comm.allreduce_fusion(
             input=allreduce_in,
@@ -253,7 +322,6 @@ class FlashInferFusedAllReduceParams:
             "fp32_acc": self.fp32_acc,
             "max_token_num": self.max_token_num,
         }
-
 
 # TODO(luka): unify
 class BasePattern:
