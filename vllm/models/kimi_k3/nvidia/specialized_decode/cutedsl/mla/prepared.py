@@ -221,6 +221,13 @@ class PreparedMla:
         if self.cores[batch, q] == "trtllm":
             trtllm_decode(query, *args, self.stock_scales, out)
             return
+        if box is None and batch == 1:
+            # B1 without DCP: one request's full KV is local, and SM-filling splits
+            # stream a long context faster than tokenspeed's one-wave count.
+            from tokenspeed_mla import get_num_sm
+
+            sms = get_num_sm(self.device)
+            cp["min_split"] = min(sms // 2, max(1, -(-self.max_seq // 1024)))
         stock_decode(query, *args, self.stock_scales, out, lse, **cp)
 
     def run(
