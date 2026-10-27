@@ -24,6 +24,9 @@ class SkinnyGemmConfig:
     k_unroll: int = 1
     vector_width: int = 8
     static_k: int | None = None
+    # Release PDL dependents right after the static-K wait instead of after the GEMM
+    # (for callers whose dependents only load weights before their own wait).
+    early_release: bool = False
 
 
 def row_stride_ok(a: torch.Tensor, config: SkinnyGemmConfig) -> bool:
@@ -154,6 +157,7 @@ class ShapeDynamicSkinnyGemm:
             has_residual=has_residual,
             use_pdl=self._use_pdl(),
             static_k=config.static_k,
+            early_release=config.early_release,
         )
         self._compiled[(dtype, config, has_residual)] = cute.compile(
             kernel,

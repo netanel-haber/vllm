@@ -34,6 +34,7 @@ class CuteSkinnyGemm:
         has_residual: bool = False,
         use_pdl: bool = False,
         static_k: int | None = None,
+        early_release: bool = False,
     ) -> None:
         if block_size % cute.arch.WARP_SIZE != 0:
             raise ValueError("block_size must be a multiple of the warp size")
@@ -51,6 +52,7 @@ class CuteSkinnyGemm:
         self.has_residual = has_residual
         self.use_pdl = use_pdl
         self.static_k = static_k
+        self.early_release = early_release
         self.num_warps = block_size // cute.arch.WARP_SIZE
 
     @cute.jit
@@ -169,6 +171,8 @@ class CuteSkinnyGemm:
 
             if const_expr(self.use_pdl):
                 cute.arch.griddepcontrol_wait()
+                if const_expr(self.early_release):
+                    cute.arch.griddepcontrol_launch_dependents()
 
             for k_tile in cutlass.range_constexpr(num_k_tiles):
                 if const_expr(k_tile < _PREFETCH_TILES):

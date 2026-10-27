@@ -50,6 +50,8 @@ class MlaValue:
             load_words(at(w_uv, head, 32 * c + 8 * quarter, v), count=4)
             for c in range(16)
         ]
+        # The o-projection producer loads only weights before its wait: launch it now.
+        cute.arch.griddepcontrol_launch_dependents()
         cute.arch.griddepcontrol_wait()
         for c in range(tid, 16 * 64, 128):
             r, j = c // 64, c % 64
@@ -66,7 +68,6 @@ class MlaValue:
                     at(gate, t0 + group + 8 * r, col), count=1, mutable=True
                 )[0]
             gates.append(unpack_bf16(word))
-        cute.arch.griddepcontrol_launch_dependents()
         cute.arch.cp_async_wait_group(0)
         cute.arch.sync_threads()
         parts = zeros((2, 4), Float32)  # two accumulation chains

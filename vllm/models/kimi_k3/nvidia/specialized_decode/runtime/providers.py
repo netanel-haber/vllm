@@ -51,7 +51,10 @@ class SkinnyProjection:
     def __init__(self, weight, fallback):
         self.weight, self.fallback, k = weight, fallback, weight.shape[1]
         tactics = {1: (128, 4, 1), 2: (64, 4, 2)}
-        self.configs = {m: SkinnyGemmConfig(m, *t, 8, k) for m, t in tactics.items()}
+        self.configs = {
+            m: SkinnyGemmConfig(m, *t, 8, k, early_release=True)
+            for m, t in tactics.items()
+        }
         for m, cfg in self.configs.items():  # compile before capture
             shape_dynamic_skinny_gemm(weight.new_zeros(m, k), weight, cfg, None)
 
