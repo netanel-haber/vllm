@@ -25,7 +25,6 @@ from ...common.primitives import (
     mma_into,
     multicast_words,
     named_barrier,
-    published,
     routing_add,
     routing_sigmoid,
     routing_weight,
@@ -33,7 +32,6 @@ from ...common.primitives import (
     smem_words,
     split,
     store_gate_mailbox,
-    store_relaxed,
     table_load,
     thread,
     unpack_bf16,
@@ -355,15 +353,6 @@ class MoeFrontTP8:
                         pointer = weights.iterator + par3 * weights.shape[1] * 16 + lane
                         store_gate_mailbox(pointer, gate_bf16_bits(value))
                     cute.arch.sync_warp()
-                for vector in range(tid, 448, 256):
-                    pointer = latent.iterator + par * 8 * 3584 + vector * 8
-                    words = mailbox_load(pointer, count=4, scope="sys")
-                    ready = published(words)
-                    while not ready:
-                        words = mailbox_load(pointer, count=4, scope="sys")
-                        ready = published(words)
-                    mailbox_store(latent_out.iterator + vector * 8, words)
-                    store_relaxed(pointer, (Uint32(0x80000000),) * 4)
             cute.arch.griddepcontrol_wait()
         else:
             cute.arch.sync_threads()

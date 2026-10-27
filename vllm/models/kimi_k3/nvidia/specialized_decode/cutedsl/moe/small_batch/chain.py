@@ -139,7 +139,10 @@ class SmallBatchChain:
             tables = box.situ_tables(beta, linear_beta)
             tensors = (box.xmoe, shared_down, tables, u32(box.hg), box.s)
             self.shared = _launch("shared", tensors, grid=box.sms - 96)
-            tensors = (box.latent, box.ids, experts.maps[256:640].view(3, 128), *scales)
+            # The latent row straight from the multicast mailbox (re-armed by the
+            # experts' last CTA).
+            latent = box.h2.buffer[self.parity, 0]
+            tensors = (latent, box.ids, experts.maps[256:640].view(3, 128), *scales)
             routed, args = _launch(
                 "experts_tp8", tensors + (box.g[self.slot, :16], box.counter)
             )

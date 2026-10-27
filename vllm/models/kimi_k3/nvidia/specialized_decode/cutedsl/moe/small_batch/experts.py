@@ -492,15 +492,20 @@ class ClusterExpertsTP8(_ClusterExperts):
         else:
             xtid = tid - 64
             packed = cute.make_rmem_tensor((3, 4), Uint32)
+            pending = Uint32(0)
             for i in cutlass.range_constexpr(3):
                 if 32 * (warp - 2) + 192 * i < 448:
-                    pointer = x.iterator + 8 * (xtid + 192 * i)
-                    ready = False
-                    while not ready:
-                        words = load_volatile(pointer, count=4)
-                        ready = published(words)
+                    pending |= Uint32(1 << i)
+            while pending != 0:
+                for i in cutlass.range_constexpr(3):
+                    if (pending & Uint32(1 << i)) != 0:
+                        words = load_volatile(
+                            x.iterator + 8 * (xtid + 192 * i), count=4
+                        )
                         for k in cutlass.range_constexpr(4):
                             packed[i, k] = words[k]
+                        if published(words):
+                            pending &= Uint32(0xFFFFFFFF ^ (1 << i))
             for i in cutlass.range_constexpr(3):
                 f = xtid + 192 * i
                 if 32 * (warp - 2) + 192 * i < 448:
