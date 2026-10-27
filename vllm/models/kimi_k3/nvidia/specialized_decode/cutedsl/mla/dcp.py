@@ -105,10 +105,10 @@ class DcpValue:
         self.heads, self.size, self.batch = heads, size, batch
         self.q = q
         # Push-only CTAs (z > 0) spread the NVLink stores over more SMs: up to one
-        # wave, at least 4 16 B chunks per thread.
+        # wave, at least one 16 B chunk per thread.
         merge = heads * ((batch + 15) // 16)
         chunks = batch * size * heads * 64
-        pushers = min(max(1, sms // merge), -(-chunks // (merge * 512 * 4)))
+        pushers = min(max(1, sms // merge), -(-chunks // (merge * 512)))
         self.grid = (heads, (batch + 15) // 16, pushers)
 
     @cute.jit
